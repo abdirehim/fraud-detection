@@ -149,17 +149,26 @@ class DataLoader:
             self.logger.info("Loading e-commerce fraud dataset")
             df = self.load_csv_data("Fraud_Data.csv")
             
-            # Convert timestamp columns to datetime
-            if 'signup_time' in df.columns:
-                df['signup_time'] = pd.to_datetime(df['signup_time'])
-            if 'purchase_time' in df.columns:
-                df['purchase_time'] = pd.to_datetime(df['purchase_time'])
+            # Apply comprehensive data cleaning
+            df = self.clean_raw_data(df, dataset_type="fraud")
             
-            # Log class distribution
+            # Ensure class column is binary (0, 1)
+            if 'class' in df.columns:
+                df['class'] = df['class'].map({0: 0, 1: 1}).fillna(0)
+            
+            # Generate synthetic fraud scenarios to improve training data
+            df = self.generate_synthetic_fraud_scenarios(df, target_col='class')
+            
+            # Log class distribution after cleaning
             if 'class' in df.columns:
                 fraud_rate = df['class'].mean()
-                self.logger.info(f"E-commerce fraud rate: {fraud_rate:.3f}")
-                self.logger.info(f"Class distribution: {df['class'].value_counts().to_dict()}")
+                self.logger.info(f"E-commerce fraud rate after cleaning: {fraud_rate:.3f}")
+                self.logger.info(f"Class distribution after cleaning: {df['class'].value_counts().to_dict()}")
+            
+            # Save cleaned data to processed directory
+            cleaned_file_path = PROCESSED_DATA_DIR / "cleaned_fraud_data.csv"
+            df.to_csv(cleaned_file_path, index=False)
+            self.logger.info(f"Saved cleaned fraud data to: {cleaned_file_path}")
             
             return df
             
@@ -178,11 +187,19 @@ class DataLoader:
             self.logger.info("Loading credit card fraud dataset")
             df = self.load_csv_data("creditcard.csv")
             
-            # Log class distribution
+            # Apply comprehensive data cleaning
+            df = self.clean_raw_data(df, dataset_type="creditcard")
+            
+            # Log class distribution after cleaning
             if 'Class' in df.columns:
                 fraud_rate = df['Class'].mean()
-                self.logger.info(f"Credit card fraud rate: {fraud_rate:.3f}")
-                self.logger.info(f"Class distribution: {df['Class'].value_counts().to_dict()}")
+                self.logger.info(f"Credit card fraud rate after cleaning: {fraud_rate:.3f}")
+                self.logger.info(f"Class distribution after cleaning: {df['Class'].value_counts().to_dict()}")
+            
+            # Save cleaned data to processed directory
+            cleaned_file_path = PROCESSED_DATA_DIR / "cleaned_creditcard_data.csv"
+            df.to_csv(cleaned_file_path, index=False)
+            self.logger.info(f"Saved cleaned creditcard data to: {cleaned_file_path}")
             
             return df
             
@@ -277,6 +294,9 @@ class DataLoader:
                 
                 # Calculate fraud rate by country
                 if 'class' in merged_df.columns:
+                    # Ensure class column is binary (0, 1)
+                    merged_df['class'] = merged_df['class'].map({0: 0, 1: 1}).fillna(0)
+                    
                     fraud_by_country = merged_df.groupby('country')['class'].agg(['count', 'mean'])
                     fraud_by_country.columns = ['transaction_count', 'fraud_rate']
                     fraud_by_country = fraud_by_country.sort_values('fraud_rate', ascending=False)
@@ -325,6 +345,12 @@ class DataLoader:
                     datasets['fraud_data_with_geo'] = self.merge_fraud_with_geolocation(
                         datasets['fraud_data'], datasets['ip_mapping']
                     )
+                    
+                    # Save merged data with geolocation
+                    merged_file_path = PROCESSED_DATA_DIR / "cleaned_fraud_data_with_geo.csv"
+                    datasets['fraud_data_with_geo'].to_csv(merged_file_path, index=False)
+                    self.logger.info(f"Saved merged fraud data with geolocation to: {merged_file_path}")
+                    
                 except Exception as e:
                     self.logger.warning(f"Could not merge fraud data with geolocation: {str(e)}")
             
@@ -431,49 +457,413 @@ class DataLoader:
         
         return info
 
+    def clean_raw_data(self, df: pd.DataFrame, dataset_type: str = "fraud") -> pd.DataFrame:
+        """
+        Clean raw data with comprehensive validation and cleaning.
+        
+        Args:
+            df: Raw DataFrame to clean
+            dataset_type: Type of dataset ('fraud', 'creditcard')
+            
+        Returns:
+            Cleaned DataFrame
+        """
+        try:
+            self.logger.info(f"Starting comprehensive data cleaning for {dataset_type} dataset")
+            df_clean = df.copy()
+            initial_shape = df_clean.shape
+            
+            # 1. Clean timestamps
+            df_clean = self._clean_timestamps(df_clean)
+            
+            # 2. Clean and validate values
+            df_clean = self._clean_values(df_clean, dataset_type)
+            
+            # 3. Remove invalid rows
+            df_clean = self._remove_invalid_rows(df_clean, dataset_type)
+            
+            # 4. Validate data integrity
+            df_clean = self._validate_data_integrity(df_clean, dataset_type)
+            
+            # 5. Apply fraud-specific data quality improvements
+            df_clean = self._improve_fraud_data_quality(df_clean, dataset_type)
+            
+            final_shape = df_clean.shape
+            removed_rows = initial_shape[0] - final_shape[0]
+            
+            if removed_rows > 0:
+                self.logger.info(f"Removed {removed_rows} invalid rows during cleaning")
+            
+            self.logger.info(f"Data cleaning completed. Shape: {initial_shape} -> {final_shape}")
+            return df_clean
+            
+        except Exception as e:
+            self.logger.error(f"Error during data cleaning: {str(e)}")
+            raise
+    
+    def _improve_fraud_data_quality(self, df: pd.DataFrame, dataset_type: str) -> pd.DataFrame:
+        """
+        Apply fraud-specific data quality improvements.
+        
+        Args:
+            df: DataFrame to improve
+            dataset_type: Type of dataset
+            
+        Returns:
+            Improved DataFrame
+        """
+        try:
+            if dataset_type == "fraud":
+                # Remove suspicious patterns that might indicate data quality issues
+                
+                # 1. Remove transactions with impossible time differences
+                if 'signup_time' in df.columns and 'purchase_time' in df.columns:
+                    df['time_diff_hours'] = (pd.to_datetime(df['purchase_time']) - 
+                                           pd.to_datetime(df['signup_time'])).dt.total_seconds() / 3600
+                    
+                    # Remove transactions where purchase happens before signup
+                    invalid_time_mask = df['time_diff_hours'] < 0
+                    if invalid_time_mask.any():
+                        self.logger.warning(f"Removing {invalid_time_mask.sum()} transactions with invalid time sequence")
+                        df = df[~invalid_time_mask]
+                
+                # 2. Remove transactions with suspicious purchase values
+                if 'purchase_value' in df.columns:
+                    # Remove zero or negative purchase values
+                    invalid_value_mask = df['purchase_value'] <= 0
+                    if invalid_value_mask.any():
+                        self.logger.warning(f"Removing {invalid_value_mask.sum()} transactions with invalid purchase values")
+                        df = df[~invalid_value_mask]
+                
+                # 3. Remove transactions with missing critical fields
+                critical_fields = ['user_id', 'device_id', 'ip_address']
+                for field in critical_fields:
+                    if field in df.columns:
+                        missing_mask = df[field].isnull() | (df[field] == '')
+                        if missing_mask.any():
+                            self.logger.warning(f"Removing {missing_mask.sum()} transactions with missing {field}")
+                            df = df[~missing_mask]
+                
+                # 4. Remove duplicate transactions (same user, same time, same amount)
+                if all(field in df.columns for field in ['user_id', 'purchase_time', 'purchase_value']):
+                    duplicate_mask = df.duplicated(subset=['user_id', 'purchase_time', 'purchase_value'], keep='first')
+                    if duplicate_mask.any():
+                        self.logger.warning(f"Removing {duplicate_mask.sum()} duplicate transactions")
+                        df = df[~duplicate_mask]
+                
+                # 5. Add data quality flags
+                df['data_quality_score'] = 1.0
+                
+                # Reduce quality score for suspicious patterns
+                if 'purchase_value' in df.columns:
+                    # High value transactions might need more scrutiny
+                    high_value_mask = df['purchase_value'] > df['purchase_value'].quantile(0.95)
+                    df.loc[high_value_mask, 'data_quality_score'] *= 0.9
+                
+                if 'age' in df.columns:
+                    # Very young or old users might be suspicious
+                    age_suspicious_mask = (df['age'] < 18) | (df['age'] > 80)
+                    df.loc[age_suspicious_mask, 'data_quality_score'] *= 0.8
+                
+                self.logger.info(f"Applied fraud-specific data quality improvements")
+                self.logger.info(f"Average data quality score: {df['data_quality_score'].mean():.3f}")
+            
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"Error improving fraud data quality: {str(e)}")
+            return df
+    
+    def _clean_timestamps(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Clean and validate timestamp data."""
+        df_clean = df.copy()
+        
+        # Convert timestamp columns to datetime with error handling
+        timestamp_cols = ['signup_time', 'purchase_time']
+        for col in timestamp_cols:
+            if col in df_clean.columns:
+                # Convert to datetime, invalid dates become NaT
+                df_clean[col] = pd.to_datetime(df_clean[col], errors='coerce')
+                
+                # Log invalid timestamps
+                invalid_count = df_clean[col].isnull().sum()
+                if invalid_count > 0:
+                    self.logger.warning(f"Found {invalid_count} invalid timestamps in {col}")
+                
+                # Remove rows with invalid timestamps
+                df_clean = df_clean.dropna(subset=[col])
+        
+        # Validate time logic (purchase_time should be after signup_time)
+        if 'signup_time' in df_clean.columns and 'purchase_time' in df_clean.columns:
+            invalid_time_order = df_clean['purchase_time'] <= df_clean['signup_time']
+            invalid_count = invalid_time_order.sum()
+            
+            if invalid_count > 0:
+                self.logger.warning(f"Found {invalid_count} rows where purchase_time <= signup_time")
+                df_clean = df_clean[~invalid_time_order]
+        
+        return df_clean
+    
+    def _clean_values(self, df: pd.DataFrame, dataset_type: str) -> pd.DataFrame:
+        """Clean and validate numerical values."""
+        df_clean = df.copy()
+        
+        if dataset_type == "fraud":
+            # Clean purchase_value
+            if 'purchase_value' in df_clean.columns:
+                # Remove negative or zero values
+                invalid_purchase = (df_clean['purchase_value'] <= 0)
+                invalid_count = invalid_purchase.sum()
+                if invalid_count > 0:
+                    self.logger.warning(f"Removing {invalid_count} rows with invalid purchase_value")
+                    df_clean = df_clean[~invalid_purchase]
+                
+                # Remove extreme outliers (top 0.1% and bottom 0.1%)
+                q_low = df_clean['purchase_value'].quantile(0.001)
+                q_high = df_clean['purchase_value'].quantile(0.999)
+                outliers = (df_clean['purchase_value'] < q_low) | (df_clean['purchase_value'] > q_high)
+                outlier_count = outliers.sum()
+                if outlier_count > 0:
+                    self.logger.warning(f"Removing {outlier_count} extreme purchase_value outliers")
+                    df_clean = df_clean[~outliers]
+            
+            # Clean age values
+            if 'age' in df_clean.columns:
+                # Remove invalid ages (negative or > 120)
+                invalid_age = (df_clean['age'] < 0) | (df_clean['age'] > 120)
+                invalid_count = invalid_age.sum()
+                if invalid_count > 0:
+                    self.logger.warning(f"Removing {invalid_count} rows with invalid age")
+                    df_clean = df_clean[~invalid_age]
+        
+        elif dataset_type == "creditcard":
+            # Clean Amount column
+            if 'Amount' in df_clean.columns:
+                # Remove negative amounts
+                invalid_amount = df_clean['Amount'] < 0
+                invalid_count = invalid_amount.sum()
+                if invalid_count > 0:
+                    self.logger.warning(f"Removing {invalid_count} rows with negative Amount")
+                    df_clean = df_clean[~invalid_amount]
+                
+                # Remove extreme outliers
+                q_low = df_clean['Amount'].quantile(0.001)
+                q_high = df_clean['Amount'].quantile(0.999)
+                outliers = (df_clean['Amount'] < q_low) | (df_clean['Amount'] > q_high)
+                outlier_count = outliers.sum()
+                if outlier_count > 0:
+                    self.logger.warning(f"Removing {outlier_count} extreme Amount outliers")
+                    df_clean = df_clean[~outliers]
+        
+        return df_clean
+    
+    def _remove_invalid_rows(self, df: pd.DataFrame, dataset_type: str) -> pd.DataFrame:
+        """Remove rows with invalid data patterns."""
+        df_clean = df.copy()
+        initial_rows = len(df_clean)
+        
+        if dataset_type == "fraud":
+            # Remove rows with missing critical fields
+            critical_cols = ['user_id', 'purchase_value', 'class']
+            missing_critical = df_clean[critical_cols].isnull().any(axis=1)
+            missing_count = missing_critical.sum()
+            if missing_count > 0:
+                self.logger.warning(f"Removing {missing_count} rows with missing critical fields")
+                df_clean = df_clean[~missing_critical]
+            
+            # Remove duplicate user_id + purchase_time combinations
+            if 'user_id' in df_clean.columns and 'purchase_time' in df_clean.columns:
+                duplicates = df_clean.duplicated(subset=['user_id', 'purchase_time'], keep='first')
+                duplicate_count = duplicates.sum()
+                if duplicate_count > 0:
+                    self.logger.warning(f"Removing {duplicate_count} duplicate user_id + purchase_time combinations")
+                    df_clean = df_clean[~duplicates]
+        
+        elif dataset_type == "creditcard":
+            # Remove rows with missing critical fields
+            critical_cols = ['Amount', 'Class']
+            missing_critical = df_clean[critical_cols].isnull().any(axis=1)
+            missing_count = missing_critical.sum()
+            if missing_count > 0:
+                self.logger.warning(f"Removing {missing_count} rows with missing critical fields")
+                df_clean = df_clean[~missing_critical]
+        
+        removed_rows = initial_rows - len(df_clean)
+        if removed_rows > 0:
+            self.logger.info(f"Removed {removed_rows} invalid rows")
+        
+        return df_clean
+    
+    def _validate_data_integrity(self, df: pd.DataFrame, dataset_type: str) -> pd.DataFrame:
+        """Validate data integrity and consistency."""
+        df_clean = df.copy()
+        
+        if dataset_type == "fraud":
+            # Validate class distribution
+            if 'class' in df_clean.columns:
+                class_counts = df_clean['class'].value_counts()
+                fraud_rate = df_clean['class'].mean()
+                self.logger.info(f"Class distribution: {class_counts.to_dict()}")
+                self.logger.info(f"Fraud rate: {fraud_rate:.3f}")
+                
+                # Warn if fraud rate is too high or too low
+                if fraud_rate > 0.5:
+                    self.logger.warning(f"Unusually high fraud rate: {fraud_rate:.3f}")
+                elif fraud_rate < 0.01:
+                    self.logger.warning(f"Unusually low fraud rate: {fraud_rate:.3f}")
+            
+            # Validate purchase value distribution
+            if 'purchase_value' in df_clean.columns:
+                purchase_stats = df_clean['purchase_value'].describe()
+                self.logger.info(f"Purchase value statistics: {purchase_stats.to_dict()}")
+        
+        elif dataset_type == "creditcard":
+            # Validate class distribution
+            if 'Class' in df_clean.columns:
+                class_counts = df_clean['Class'].value_counts()
+                fraud_rate = df_clean['Class'].mean()
+                self.logger.info(f"Class distribution: {class_counts.to_dict()}")
+                self.logger.info(f"Fraud rate: {fraud_rate:.3f}")
+            
+            # Validate amount distribution
+            if 'Amount' in df_clean.columns:
+                amount_stats = df_clean['Amount'].describe()
+                self.logger.info(f"Amount statistics: {amount_stats.to_dict()}")
+        
+        return df_clean
 
-def load_sample_data() -> pd.DataFrame:
-    """
-    Load sample data for testing and development.
-    
-    Returns:
-        Sample DataFrame with synthetic fraud detection data
-    """
-    logger = setup_logging("sample_data_loader")
-    
-    try:
-        # Create sample data for development
-        np.random.seed(42)
-        n_samples = 1000
+    def generate_synthetic_fraud_scenarios(self, df: pd.DataFrame, target_col: str = 'class') -> pd.DataFrame:
+        """
+        Generate synthetic fraud scenarios to improve training data quality.
         
-        # Generate synthetic transaction data
-        data = {
-            'transaction_id': range(1, n_samples + 1),
-            'amount': np.random.exponential(100, n_samples),
-            'merchant_category': np.random.choice(['retail', 'online', 'travel', 'food'], n_samples),
-            'hour_of_day': np.random.randint(0, 24, n_samples),
-            'day_of_week': np.random.randint(0, 7, n_samples),
-            'customer_age': np.random.normal(35, 10, n_samples).astype(int),
-            'distance_from_home': np.random.exponential(50, n_samples),
-            'distance_from_last_transaction': np.random.exponential(10, n_samples),
-            'ratio_to_median_purchase_price': np.random.normal(1, 0.5, n_samples),
-            'repeat_retailer': np.random.choice([0, 1], n_samples, p=[0.7, 0.3]),
-            'used_chip': np.random.choice([0, 1], n_samples, p=[0.3, 0.7]),
-            'used_pin_number': np.random.choice([0, 1], n_samples, p=[0.6, 0.4]),
-            'online_order': np.random.choice([0, 1], n_samples, p=[0.4, 0.6])
-        }
-        
-        df = pd.DataFrame(data)
-        
-        # Create synthetic fraud labels (imbalanced dataset)
-        fraud_prob = 0.05  # 5% fraud rate
-        df['fraud'] = np.random.choice([0, 1], n_samples, p=[1-fraud_prob, fraud_prob])
-        
-        logger.info(f"Generated sample data: {df.shape[0]} rows, {df.shape[1]} columns")
-        logger.info(f"Fraud rate: {df['fraud'].mean():.3f}")
-        
-        return df
-        
-    except Exception as e:
-        logger.error(f"Failed to generate sample data: {str(e)}")
-        raise 
+        Args:
+            df: Original DataFrame
+            target_col: Target column name
+            
+        Returns:
+            DataFrame with synthetic fraud scenarios added
+        """
+        try:
+            self.logger.info("Generating synthetic fraud scenarios")
+            
+            # Get existing fraud cases for pattern analysis
+            fraud_cases = df[df[target_col] == 1].copy()
+            legitimate_cases = df[df[target_col] == 0].copy()
+            
+            if len(fraud_cases) == 0:
+                self.logger.warning("No existing fraud cases found for pattern analysis")
+                return df
+            
+            synthetic_fraud_cases = []
+            
+            # 1. VELOCITY FRAUD SCENARIOS (Burst transactions)
+            self.logger.info("Creating velocity fraud scenarios")
+            for _ in range(min(20, len(legitimate_cases))):
+                base_case = legitimate_cases.sample(n=1).iloc[0].copy()
+                
+                # Create burst transaction pattern
+                base_case['purchase_value'] = base_case['purchase_value'] * np.random.uniform(1.5, 3.0)
+                base_case['purchase_time'] = pd.to_datetime(base_case['purchase_time']) + pd.Timedelta(minutes=np.random.randint(1, 10))
+                base_case[target_col] = 1
+                
+                synthetic_fraud_cases.append(base_case)
+            
+            # 2. GEOGRAPHIC FRAUD SCENARIOS (Location anomalies)
+            self.logger.info("Creating geographic fraud scenarios")
+            if 'country' in df.columns:
+                for _ in range(min(15, len(legitimate_cases))):
+                    base_case = legitimate_cases.sample(n=1).iloc[0].copy()
+                    
+                    # Change country to create geographic anomaly
+                    base_case['country'] = 'Unknown'  # Suspicious location
+                    base_case['purchase_value'] = base_case['purchase_value'] * np.random.uniform(2.0, 4.0)
+                    base_case[target_col] = 1
+                    
+                    synthetic_fraud_cases.append(base_case)
+            
+            # 3. DEVICE FRAUD SCENARIOS (Device sharing)
+            self.logger.info("Creating device fraud scenarios")
+            if 'device_id' in df.columns:
+                # Find devices used by multiple users
+                device_users = df.groupby('device_id')['user_id'].nunique()
+                shared_devices = device_users[device_users > 1].index.tolist()
+                
+                for _ in range(min(10, len(legitimate_cases))):
+                    base_case = legitimate_cases.sample(n=1).iloc[0].copy()
+                    
+                    # Use shared device
+                    if shared_devices:
+                        base_case['device_id'] = np.random.choice(shared_devices)
+                    base_case['purchase_value'] = base_case['purchase_value'] * np.random.uniform(1.8, 3.5)
+                    base_case[target_col] = 1
+                    
+                    synthetic_fraud_cases.append(base_case)
+            
+            # 4. TIME-BASED FRAUD SCENARIOS (Late night, fast fraud)
+            self.logger.info("Creating time-based fraud scenarios")
+            for _ in range(min(15, len(legitimate_cases))):
+                base_case = legitimate_cases.sample(n=1).iloc[0].copy()
+                
+                # Late night transaction
+                purchase_time = pd.to_datetime(base_case['purchase_time'])
+                late_night_time = purchase_time.replace(hour=np.random.choice([0, 1, 2, 3, 23]))
+                base_case['purchase_time'] = late_night_time
+                
+                # High value transaction
+                base_case['purchase_value'] = base_case['purchase_value'] * np.random.uniform(2.5, 5.0)
+                base_case[target_col] = 1
+                
+                synthetic_fraud_cases.append(base_case)
+            
+            # 5. AMOUNT-BASED FRAUD SCENARIOS (Suspicious amounts)
+            self.logger.info("Creating amount-based fraud scenarios")
+            suspicious_amounts = [0.01, 1.00, 10.00, 100.00, 500.00, 1000.00]
+            
+            for _ in range(min(10, len(legitimate_cases))):
+                base_case = legitimate_cases.sample(n=1).iloc[0].copy()
+                
+                # Use suspicious amount
+                base_case['purchase_value'] = np.random.choice(suspicious_amounts)
+                base_case[target_col] = 1
+                
+                synthetic_fraud_cases.append(base_case)
+            
+            # 6. BEHAVIORAL ANOMALY SCENARIOS (Unusual patterns)
+            self.logger.info("Creating behavioral anomaly scenarios")
+            for _ in range(min(10, len(legitimate_cases))):
+                base_case = legitimate_cases.sample(n=1).iloc[0].copy()
+                
+                # Multiple anomalies combined
+                base_case['purchase_value'] = base_case['purchase_value'] * np.random.uniform(3.0, 6.0)  # Very high amount
+                base_case['purchase_time'] = pd.to_datetime(base_case['purchase_time']) + pd.Timedelta(hours=np.random.randint(22, 24))  # Late night
+                if 'country' in base_case:
+                    base_case['country'] = 'Unknown'  # Suspicious location
+                base_case[target_col] = 1
+                
+                synthetic_fraud_cases.append(base_case)
+            
+            # Combine original data with synthetic fraud cases
+            synthetic_df = pd.DataFrame(synthetic_fraud_cases)
+            combined_df = pd.concat([df, synthetic_df], ignore_index=True)
+            
+            # Shuffle the data
+            combined_df = combined_df.sample(frac=1, random_state=42).reset_index(drop=True)
+            
+            # Log the results
+            original_fraud_count = len(fraud_cases)
+            synthetic_fraud_count = len(synthetic_fraud_cases)
+            total_fraud_count = len(combined_df[combined_df[target_col] == 1])
+            
+            self.logger.info(f"Generated {synthetic_fraud_count} synthetic fraud scenarios")
+            self.logger.info(f"Original fraud cases: {original_fraud_count}")
+            self.logger.info(f"Total fraud cases: {total_fraud_count}")
+            self.logger.info(f"New fraud rate: {total_fraud_count / len(combined_df):.3f}")
+            
+            return combined_df
+            
+        except Exception as e:
+            self.logger.error(f"Error generating synthetic fraud scenarios: {str(e)}")
+            return df
+
+
+ 

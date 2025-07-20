@@ -14,7 +14,7 @@ import logging
 # Add src to path
 sys.path.append(str(Path(__file__).parent / "src"))
 
-from src.data_loader import load_sample_data
+from src.data_loader import DataLoader
 from src.preprocess import DataPreprocessor
 from src.models.train import ModelTrainer
 from src.models.evaluate import ModelEvaluator
@@ -27,8 +27,8 @@ def main():
     parser = argparse.ArgumentParser(description="Fraud Detection Pipeline")
     parser.add_argument("--data-path", type=str, help="Path to input data file")
     parser.add_argument("--output-dir", type=str, default="experiments", help="Output directory for results")
-    parser.add_argument("--resampling", type=str, default="smote", 
-                       choices=["smote", "undersample", "smoteenn", "none"],
+    parser.add_argument("--resampling", type=str, default="class_weights", 
+                       choices=["smote", "undersample", "smoteenn", "adasyn", "borderline_smote", "class_weights", "none"],
                        help="Resampling method for imbalanced data")
     parser.add_argument("--target-col", type=str, default="fraud", help="Target column name")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
@@ -49,10 +49,10 @@ def main():
         
         # Step 1: Load Data
         logger.info("Step 1: Loading data")
+        loader = DataLoader()
+        
         if args.data_path:
-            # Load from file
-            from src.data_loader import DataLoader
-            loader = DataLoader()
+            # Load from specific file
             if args.data_path.endswith('.csv'):
                 df = loader.load_csv_data(args.data_path)
             elif args.data_path.endswith('.parquet'):
@@ -60,10 +60,36 @@ def main():
             else:
                 raise ValueError(f"Unsupported file format: {args.data_path}")
         else:
-            # Load sample data
-            df = load_sample_data()
+            # Load all real datasets
+            logger.info("Loading all fraud detection datasets")
+            datasets = loader.load_all_datasets()
+            
+            # Use fraud data with geolocation if available, otherwise use regular fraud data
+            if 'fraud_data_with_geo' in datasets:
+                df = datasets['fraud_data_with_geo']
+                logger.info("Using fraud data with geolocation information")
+            elif 'fraud_data' in datasets:
+                df = datasets['fraud_data']
+                logger.info("Using e-commerce fraud data")
+            elif 'creditcard_data' in datasets:
+                df = datasets['creditcard_data']
+                logger.info("Using credit card fraud data")
+                args.target_col = 'Class'  # Update target column for credit card data
+            else:
+                raise ValueError("No fraud detection datasets found in data/raw/")
         
         logger.info(f"Loaded data: {df.shape[0]} rows, {df.shape[1]} columns")
+        
+        # Determine target column based on dataset
+        if args.target_col not in df.columns:
+            if 'class' in df.columns:
+                args.target_col = 'class'
+            elif 'Class' in df.columns:
+                args.target_col = 'Class'
+            else:
+                raise ValueError(f"Target column '{args.target_col}' not found in dataset")
+        
+        logger.info(f"Using target column: {args.target_col}")
         logger.info(f"Fraud rate: {df[args.target_col].mean():.3f}")
         
         # Step 2: Preprocess Data
@@ -97,8 +123,13 @@ def main():
         
         # Step 4: Evaluate Models
         logger.info("Step 4: Evaluating models")
+        
+        # Convert test set target to binary format for evaluation
+        y_test_binary = trainer.convert_target_to_binary(y_test)
+        logger.info(f"Converted test target to binary: {y_test_binary.value_counts().to_dict()}")
+        
         evaluator = ModelEvaluator()
-        evaluation_results = evaluator.evaluate_all_models(models, X_test, y_test)
+        evaluation_results = evaluator.evaluate_all_models(models, X_test, y_test_binary)
         
         # Save evaluation results
         evaluation_dir = experiment_dir / "evaluation"
@@ -117,7 +148,7 @@ def main():
         
         # Generate explanation report
         explanation_report = explainer.generate_explanation_report(
-            best_model, X_test, y_test, 
+            best_model, X_test, y_test_binary, 
             output_path=experiment_dir / "explanation_report.json"
         )
         

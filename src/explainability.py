@@ -305,8 +305,8 @@ class ModelExplainer:
         """
         try:
             explanation = {
-                "prediction": prediction,
-                "prediction_label": "Fraud" if prediction == 1 else "Legitimate",
+                "prediction": int(prediction),  # Ensure prediction is int
+                "prediction_label": "Fraud" if int(prediction) == 1 else "Legitimate",
                 "top_features": [],
                 "shap_values": None
             }
@@ -343,7 +343,7 @@ class ModelExplainer:
             
         except Exception as e:
             self.logger.error(f"Error explaining prediction: {str(e)}")
-            return {"prediction": prediction, "error": str(e)}
+            return {"prediction": int(prediction), "error": str(e)}
     
     def plot_prediction_explanation(
         self, 

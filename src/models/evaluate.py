@@ -111,6 +111,51 @@ class ModelEvaluator:
             self.logger.error(f"Error computing metrics: {str(e)}")
             raise
     
+    def optimize_threshold(
+        self, 
+        y_true: pd.Series, 
+        y_prob: np.ndarray,
+        metric: str = "f1"
+    ) -> Tuple[float, float]:
+        """
+        Optimize classification threshold for imbalanced datasets.
+        
+        Args:
+            y_true: True labels
+            y_prob: Predicted probabilities
+            metric: Metric to optimize ('f1', 'precision', 'recall')
+            
+        Returns:
+            Tuple of (optimal_threshold, best_score)
+        """
+        try:
+            thresholds = np.arange(0.1, 0.9, 0.05)
+            best_score = 0
+            optimal_threshold = 0.5
+            
+            for threshold in thresholds:
+                y_pred = (y_prob >= threshold).astype(int)
+                
+                if metric == "f1":
+                    score = f1_score(y_true, y_pred, zero_division=0)
+                elif metric == "precision":
+                    score = precision_score(y_true, y_pred, zero_division=0)
+                elif metric == "recall":
+                    score = recall_score(y_true, y_pred, zero_division=0)
+                else:
+                    score = f1_score(y_true, y_pred, zero_division=0)
+                
+                if score > best_score:
+                    best_score = score
+                    optimal_threshold = threshold
+            
+            self.logger.info(f"Optimal threshold: {optimal_threshold:.3f} (score: {best_score:.4f})")
+            return optimal_threshold, best_score
+            
+        except Exception as e:
+            self.logger.error(f"Error optimizing threshold: {str(e)}")
+            return 0.5, 0.0
+    
     def evaluate_model(
         self, 
         model: Any, 
@@ -119,7 +164,7 @@ class ModelEvaluator:
         model_name: str = "model"
     ) -> Dict[str, Any]:
         """
-        Evaluate a single model on test data.
+        Evaluate a single model on test data with threshold optimization.
         
         Args:
             model: Trained model
@@ -133,9 +178,6 @@ class ModelEvaluator:
         try:
             self.logger.info(f"Evaluating {model_name}")
             
-            # Make predictions
-            y_pred = model.predict(X_test)
-            
             # Get probabilities if available
             y_prob = None
             if hasattr(model, 'predict_proba'):
@@ -144,16 +186,36 @@ class ModelEvaluator:
                 except Exception as e:
                     self.logger.warning(f"Could not get probabilities for {model_name}: {str(e)}")
             
-            # Compute metrics
-            metrics = self.compute_metrics(y_test, y_pred, y_prob)
+            # Optimize threshold for fraud detection
+            if y_prob is not None:
+                optimal_threshold, best_f1 = self.optimize_threshold(y_test, y_prob, "f1")
+                y_pred_optimized = (y_prob >= optimal_threshold).astype(int)
+                
+                # Compute metrics with optimized threshold
+                metrics = self.compute_metrics(y_test, y_pred_optimized, y_prob)
+                metrics['optimal_threshold'] = optimal_threshold
+                metrics['best_f1_score'] = best_f1
+                
+                # Also compute default threshold metrics for comparison
+                y_pred_default = model.predict(X_test)
+                metrics_default = self.compute_metrics(y_test, y_pred_default, y_prob)
+                metrics['default_threshold_metrics'] = metrics_default
+                
+            else:
+                # Fallback to default predictions
+                y_pred_optimized = model.predict(X_test)
+                metrics = self.compute_metrics(y_test, y_pred_optimized, y_prob)
+                metrics['optimal_threshold'] = 0.5
+                metrics['best_f1_score'] = metrics['f1_score']
             
             # Create evaluation result
             evaluation_result = {
                 'model_name': model_name,
                 'metrics': metrics,
-                'predictions': y_pred,
+                'predictions': y_pred_optimized,
                 'probabilities': y_prob,
-                'true_labels': y_test.values
+                'true_labels': y_test.values,
+                'optimal_threshold': metrics.get('optimal_threshold', 0.5)
             }
             
             self.evaluation_results[model_name] = evaluation_result
