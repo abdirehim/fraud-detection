@@ -14,7 +14,7 @@ import logging
 # Add src to path
 sys.path.append(str(Path(__file__).parent / "src"))
 
-from src.data_loader import load_sample_data
+from src.data_loader import DataLoader
 from src.preprocess import DataPreprocessor
 from src.models.train import ModelTrainer
 from src.models.evaluate import ModelEvaluator
@@ -49,10 +49,10 @@ def main():
         
         # Step 1: Load Data
         logger.info("Step 1: Loading data")
+        loader = DataLoader()
+        
         if args.data_path:
-            # Load from file
-            from src.data_loader import DataLoader
-            loader = DataLoader()
+            # Load from specific file
             if args.data_path.endswith('.csv'):
                 df = loader.load_csv_data(args.data_path)
             elif args.data_path.endswith('.parquet'):
@@ -60,10 +60,36 @@ def main():
             else:
                 raise ValueError(f"Unsupported file format: {args.data_path}")
         else:
-            # Load sample data
-            df = load_sample_data()
+            # Load all real datasets
+            logger.info("Loading all fraud detection datasets")
+            datasets = loader.load_all_datasets()
+            
+            # Use fraud data with geolocation if available, otherwise use regular fraud data
+            if 'fraud_data_with_geo' in datasets:
+                df = datasets['fraud_data_with_geo']
+                logger.info("Using fraud data with geolocation information")
+            elif 'fraud_data' in datasets:
+                df = datasets['fraud_data']
+                logger.info("Using e-commerce fraud data")
+            elif 'creditcard_data' in datasets:
+                df = datasets['creditcard_data']
+                logger.info("Using credit card fraud data")
+                args.target_col = 'Class'  # Update target column for credit card data
+            else:
+                raise ValueError("No fraud detection datasets found in data/raw/")
         
         logger.info(f"Loaded data: {df.shape[0]} rows, {df.shape[1]} columns")
+        
+        # Determine target column based on dataset
+        if args.target_col not in df.columns:
+            if 'class' in df.columns:
+                args.target_col = 'class'
+            elif 'Class' in df.columns:
+                args.target_col = 'Class'
+            else:
+                raise ValueError(f"Target column '{args.target_col}' not found in dataset")
+        
+        logger.info(f"Using target column: {args.target_col}")
         logger.info(f"Fraud rate: {df[args.target_col].mean():.3f}")
         
         # Step 2: Preprocess Data

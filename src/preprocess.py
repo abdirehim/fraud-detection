@@ -12,8 +12,11 @@ from sklearn.impute import SimpleImputer
 from sklearn.feature_selection import SelectKBest, f_classif
 from typing import Tuple, Dict, Any, Optional, List
 import logging
+import os
+import json
+from datetime import datetime
 
-from .config import FEATURE_CONFIG
+from .config import FEATURE_CONFIG, PROCESSED_DATA_DIR
 from .utils import setup_logging
 
 
@@ -110,33 +113,19 @@ class DataPreprocessor:
             self.logger.info("Starting feature engineering")
             df_engineered = df.copy()
             
-            # Time-based features
-            if 'hour_of_day' in df_engineered.columns:
-                df_engineered['is_night'] = (df_engineered['hour_of_day'] >= 22) | (df_engineered['hour_of_day'] <= 6)
-                df_engineered['is_weekend'] = df_engineered['day_of_week'].isin([5, 6])
-                self.logger.info("Created time-based features")
+            # Detect dataset type based on columns
+            is_fraud_data = 'signup_time' in df_engineered.columns and 'purchase_time' in df_engineered.columns
+            is_creditcard_data = 'Time' in df_engineered.columns and 'V1' in df_engineered.columns
             
-            # Amount-based features
-            if 'amount' in df_engineered.columns:
-                df_engineered['amount_log'] = np.log1p(df_engineered['amount'])
-                df_engineered['amount_squared'] = df_engineered['amount'] ** 2
-                df_engineered['high_amount'] = df_engineered['amount'] > df_engineered['amount'].quantile(0.95)
-                self.logger.info("Created amount-based features")
-            
-            # Distance-based features
-            if 'distance_from_home' in df_engineered.columns:
-                df_engineered['far_from_home'] = df_engineered['distance_from_home'] > df_engineered['distance_from_home'].quantile(0.9)
-                self.logger.info("Created distance-based features")
-            
-            # Interaction features
-            if all(col in df_engineered.columns for col in ['online_order', 'used_pin_number']):
-                df_engineered['online_pin'] = df_engineered['online_order'] & df_engineered['used_pin_number']
-                self.logger.info("Created interaction features")
-            
-            # Ratio features
-            if 'ratio_to_median_purchase_price' in df_engineered.columns:
-                df_engineered['high_ratio'] = df_engineered['ratio_to_median_purchase_price'] > 2.0
-                self.logger.info("Created ratio-based features")
+            if is_fraud_data:
+                self.logger.info("Detected e-commerce fraud dataset - creating e-commerce specific features")
+                df_engineered = self._engineer_fraud_data_features(df_engineered)
+            elif is_creditcard_data:
+                self.logger.info("Detected credit card fraud dataset - creating credit card specific features")
+                df_engineered = self._engineer_creditcard_features(df_engineered)
+            else:
+                self.logger.info("Unknown dataset type - creating generic features")
+                df_engineered = self._engineer_generic_features(df_engineered)
             
             self.logger.info(f"Feature engineering completed. New shape: {df_engineered.shape}")
             return df_engineered
@@ -144,6 +133,188 @@ class DataPreprocessor:
         except Exception as e:
             self.logger.error(f"Error during feature engineering: {str(e)}")
             raise
+    
+    def _engineer_fraud_data_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Engineer features specific to e-commerce fraud data."""
+        df_engineered = df.copy()
+        
+        # Time-based features from signup and purchase times
+        if 'signup_time' in df_engineered.columns and 'purchase_time' in df_engineered.columns:
+            # Extract time components
+            df_engineered['signup_hour'] = df_engineered['signup_time'].dt.hour
+            df_engineered['signup_day'] = df_engineered['signup_time'].dt.day
+            df_engineered['signup_month'] = df_engineered['signup_time'].dt.month
+            df_engineered['signup_weekday'] = df_engineered['signup_time'].dt.weekday
+            
+            df_engineered['purchase_hour'] = df_engineered['purchase_time'].dt.hour
+            df_engineered['purchase_day'] = df_engineered['purchase_time'].dt.day
+            df_engineered['purchase_month'] = df_engineered['purchase_time'].dt.month
+            df_engineered['purchase_weekday'] = df_engineered['purchase_time'].dt.weekday
+            
+            # Time difference features
+            df_engineered['days_to_purchase'] = (df_engineered['purchase_time'] - df_engineered['signup_time']).dt.days
+            df_engineered['hours_to_purchase'] = (df_engineered['purchase_time'] - df_engineered['signup_time']).dt.total_seconds() / 3600
+            
+            # Time-based flags
+            df_engineered['is_night_signup'] = (df_engineered['signup_hour'] >= 22) | (df_engineered['signup_hour'] <= 6)
+            df_engineered['is_night_purchase'] = (df_engineered['purchase_hour'] >= 22) | (df_engineered['purchase_hour'] <= 6)
+            df_engineered['is_weekend_signup'] = df_engineered['signup_weekday'].isin([5, 6])
+            df_engineered['is_weekend_purchase'] = df_engineered['purchase_weekday'].isin([5, 6])
+            
+            # Quick purchase flag (suspicious if purchase happens very quickly after signup)
+            df_engineered['quick_purchase'] = df_engineered['hours_to_purchase'] < 1
+            df_engineered['very_quick_purchase'] = df_engineered['hours_to_purchase'] < 0.1  # Less than 6 minutes
+            
+            self.logger.info("Created time-based features for e-commerce data")
+        
+        # Purchase value features
+        if 'purchase_value' in df_engineered.columns:
+            df_engineered['purchase_value_log'] = np.log1p(df_engineered['purchase_value'])
+            df_engineered['purchase_value_squared'] = df_engineered['purchase_value'] ** 2
+            df_engineered['high_value_purchase'] = df_engineered['purchase_value'] > df_engineered['purchase_value'].quantile(0.95)
+            df_engineered['low_value_purchase'] = df_engineered['purchase_value'] < df_engineered['purchase_value'].quantile(0.05)
+            
+            # Value categories
+            df_engineered['value_category'] = pd.cut(
+                df_engineered['purchase_value'], 
+                bins=[0, 10, 50, 100, 500, float('inf')], 
+                labels=['very_low', 'low', 'medium', 'high', 'very_high']
+            )
+            
+            self.logger.info("Created purchase value features")
+        
+        # User behavior features
+        if 'user_id' in df_engineered.columns:
+            # User purchase count
+            user_purchase_counts = df_engineered['user_id'].value_counts()
+            df_engineered['user_purchase_count'] = df_engineered['user_id'].map(user_purchase_counts)
+            df_engineered['is_repeat_user'] = df_engineered['user_purchase_count'] > 1
+            
+            # User average purchase value
+            user_avg_values = df_engineered.groupby('user_id')['purchase_value'].mean()
+            df_engineered['user_avg_purchase_value'] = df_engineered['user_id'].map(user_avg_values)
+            
+            self.logger.info("Created user behavior features")
+        
+        # Device behavior features
+        if 'device_id' in df_engineered.columns:
+            # Device usage count
+            device_usage_counts = df_engineered['device_id'].value_counts()
+            df_engineered['device_usage_count'] = df_engineered['device_id'].map(device_usage_counts)
+            df_engineered['is_shared_device'] = df_engineered['device_usage_count'] > 1
+            
+            self.logger.info("Created device behavior features")
+        
+        # Source and browser features
+        if 'source' in df_engineered.columns:
+            df_engineered['source_encoded'] = pd.Categorical(df_engineered['source']).codes
+            self.logger.info("Created source features")
+        
+        if 'browser' in df_engineered.columns:
+            df_engineered['browser_encoded'] = pd.Categorical(df_engineered['browser']).codes
+            self.logger.info("Created browser features")
+        
+        # Age features
+        if 'age' in df_engineered.columns:
+            df_engineered['age_group'] = pd.cut(
+                df_engineered['age'], 
+                bins=[0, 25, 35, 50, 65, 100], 
+                labels=['young', 'young_adult', 'adult', 'senior', 'elderly']
+            )
+            df_engineered['age_group_encoded'] = pd.Categorical(df_engineered['age_group']).codes
+            self.logger.info("Created age features")
+        
+        # Sex features
+        if 'sex' in df_engineered.columns:
+            df_engineered['sex_encoded'] = pd.Categorical(df_engineered['sex']).codes
+            self.logger.info("Created sex features")
+        
+        # IP address features (if available)
+        if 'ip_address' in df_engineered.columns:
+            # IP usage count
+            ip_usage_counts = df_engineered['ip_address'].value_counts()
+            df_engineered['ip_usage_count'] = df_engineered['ip_address'].map(ip_usage_counts)
+            df_engineered['is_shared_ip'] = df_engineered['ip_usage_count'] > 1
+            
+            self.logger.info("Created IP address features")
+        
+        # Country features (if available)
+        if 'country' in df_engineered.columns:
+            df_engineered['country_encoded'] = pd.Categorical(df_engineered['country']).codes
+            self.logger.info("Created country features")
+        
+        return df_engineered
+    
+    def _engineer_creditcard_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Engineer features specific to credit card fraud data."""
+        df_engineered = df.copy()
+        
+        # Time-based features
+        if 'Time' in df_engineered.columns:
+            # Extract time components (assuming Time is in seconds from start)
+            df_engineered['time_hour'] = (df_engineered['Time'] // 3600) % 24
+            df_engineered['time_day'] = (df_engineered['Time'] // 86400) % 7  # Day of week
+            
+            # Time-based flags
+            df_engineered['is_night_time'] = (df_engineered['time_hour'] >= 22) | (df_engineered['time_hour'] <= 6)
+            df_engineered['is_weekend'] = df_engineered['time_day'].isin([5, 6])
+            
+            self.logger.info("Created time-based features for credit card data")
+        
+        # Amount features
+        if 'Amount' in df_engineered.columns:
+            df_engineered['amount_log'] = np.log1p(df_engineered['Amount'])
+            df_engineered['amount_squared'] = df_engineered['Amount'] ** 2
+            df_engineered['high_amount'] = df_engineered['Amount'] > df_engineered['Amount'].quantile(0.95)
+            df_engineered['low_amount'] = df_engineered['Amount'] < df_engineered['Amount'].quantile(0.05)
+            
+            # Amount categories
+            df_engineered['amount_category'] = pd.cut(
+                df_engineered['Amount'], 
+                bins=[0, 10, 50, 100, 500, float('inf')], 
+                labels=['very_low', 'low', 'medium', 'high', 'very_high']
+            )
+            
+            self.logger.info("Created amount features for credit card data")
+        
+        # PCA feature interactions (V1-V5)
+        v_columns = [col for col in df_engineered.columns if col.startswith('V')]
+        if len(v_columns) >= 2:
+            # Create interaction features between PCA components
+            for i, col1 in enumerate(v_columns[:3]):  # Limit to first 3 to avoid too many features
+                for col2 in v_columns[i+1:4]:
+                    interaction_name = f'{col1}_{col2}_interaction'
+                    df_engineered[interaction_name] = df_engineered[col1] * df_engineered[col2]
+            
+            # Statistical features from PCA components
+            df_engineered['v_features_mean'] = df_engineered[v_columns].mean(axis=1)
+            df_engineered['v_features_std'] = df_engineered[v_columns].std(axis=1)
+            df_engineered['v_features_max'] = df_engineered[v_columns].max(axis=1)
+            df_engineered['v_features_min'] = df_engineered[v_columns].min(axis=1)
+            
+            self.logger.info("Created PCA feature interactions")
+        
+        return df_engineered
+    
+    def _engineer_generic_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Engineer generic features for unknown dataset types."""
+        df_engineered = df.copy()
+        
+        # Generic numerical features
+        numerical_cols = df_engineered.select_dtypes(include=[np.number]).columns
+        for col in numerical_cols:
+            if col not in ['class', 'Class', 'fraud']:  # Skip target columns
+                df_engineered[f'{col}_log'] = np.log1p(np.abs(df_engineered[col]))
+                df_engineered[f'{col}_squared'] = df_engineered[col] ** 2
+        
+        # Generic categorical features
+        categorical_cols = df_engineered.select_dtypes(include=['object', 'category']).columns
+        for col in categorical_cols:
+            if col not in ['class', 'Class', 'fraud']:  # Skip target columns
+                df_engineered[f'{col}_encoded'] = pd.Categorical(df_engineered[col]).codes
+        
+        self.logger.info("Created generic features")
+        return df_engineered
     
     def encode_categorical_features(self, df: pd.DataFrame, fit: bool = True) -> pd.DataFrame:
         """
@@ -163,8 +334,11 @@ class DataPreprocessor:
             categorical_cols = df_encoded.select_dtypes(include=['object', 'category']).columns
             
             for col in categorical_cols:
-                if col == self.config.get('target_column'):
-                    continue  # Skip target column
+                # Skip target column - check both config and common target names
+                if (col == self.config.get('target_column') or 
+                    col in ['class', 'Class', 'target', 'Target', 'label', 'Label']):
+                    self.logger.info(f"Skipping target column: {col}")
+                    continue
                 
                 if fit:
                     # Fit and transform
@@ -261,29 +435,43 @@ class DataPreprocessor:
         try:
             self.logger.info("Starting feature selection")
             
+            # Remove datetime columns as they cause issues with sklearn
+            datetime_cols = df.select_dtypes(include=['datetime64']).columns
+            if len(datetime_cols) > 0:
+                df = df.drop(columns=datetime_cols)
+                self.logger.info(f"Removed datetime columns: {list(datetime_cols)}")
+            
             # Prepare features and target
             feature_cols = [col for col in df.columns if col != target_col]
             X = df[feature_cols]
             y = df[target_col]
             
+            # Convert to numeric only for feature selection
+            numeric_cols = X.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) == 0:
+                self.logger.warning("No numeric features available for selection")
+                return df
+            
+            X_numeric = X[numeric_cols]
+            
             if fit:
                 # Fit feature selector
-                k = min(20, len(feature_cols))  # Select top 20 features or all if less
+                k = min(20, len(numeric_cols))  # Select top 20 features or all if less
                 self.feature_selector = SelectKBest(score_func=f_classif, k=k)
-                X_selected = self.feature_selector.fit_transform(X, y)
+                X_selected = self.feature_selector.fit_transform(X_numeric, y)
                 
                 # Get selected feature names
-                selected_features = X.columns[self.feature_selector.get_support()].tolist()
+                selected_features = numeric_cols[self.feature_selector.get_support()].tolist()
                 self.logger.info(f"Selected {len(selected_features)} features: {selected_features}")
                 
-                # Create new DataFrame with selected features
+                # Create new DataFrame with selected features and target
                 df_selected = df[selected_features + [target_col]]
                 
             else:
                 # Transform only (for inference)
                 if self.feature_selector is not None:
-                    X_selected = self.feature_selector.transform(X)
-                    selected_features = X.columns[self.feature_selector.get_support()].tolist()
+                    X_selected = self.feature_selector.transform(X_numeric)
+                    selected_features = numeric_cols[self.feature_selector.get_support()].tolist()
                     df_selected = df[selected_features + [target_col]]
                     self.logger.info("Applied fitted feature selector")
                 else:
@@ -295,6 +483,50 @@ class DataPreprocessor:
             
         except Exception as e:
             self.logger.error(f"Error during feature selection: {str(e)}")
+            raise
+    
+    def handle_imbalanced_data(self, X: pd.DataFrame, y: pd.Series, method: str = "smote") -> Tuple[pd.DataFrame, pd.Series]:
+        """
+        Handle imbalanced data using various resampling techniques.
+        
+        Args:
+            X: Feature DataFrame
+            y: Target Series
+            method: Resampling method ('smote', 'undersample', 'smoteenn', 'none')
+            
+        Returns:
+            Tuple of resampled features and target
+        """
+        try:
+            self.logger.info(f"Handling imbalanced data using method: {method}")
+            
+            if method == "none":
+                return X, y
+            
+            # Import resampling methods
+            from imblearn.over_sampling import SMOTE
+            from imblearn.under_sampling import RandomUnderSampler
+            from imblearn.combine import SMOTEENN
+            
+            if method == "smote":
+                resampler = SMOTE(random_state=42)
+            elif method == "undersample":
+                resampler = RandomUnderSampler(random_state=42)
+            elif method == "smoteenn":
+                resampler = SMOTEENN(random_state=42)
+            else:
+                raise ValueError(f"Unsupported resampling method: {method}")
+            
+            # Resample the data
+            X_resampled, y_resampled = resampler.fit_resample(X, y)
+            
+            self.logger.info(f"Resampled data: {len(X_resampled)} samples (original: {len(X)})")
+            self.logger.info(f"New class distribution: {y_resampled.value_counts().to_dict()}")
+            
+            return X_resampled, y_resampled
+            
+        except Exception as e:
+            self.logger.error(f"Error during imbalanced data handling: {str(e)}")
             raise
     
     def fit_transform(self, df: pd.DataFrame, target_col: str) -> pd.DataFrame:
@@ -328,6 +560,53 @@ class DataPreprocessor:
             
             self.is_fitted = True
             self.logger.info("Fit_transform pipeline completed successfully")
+            
+            # Save preprocessed data to processed directory
+            processed_file_path = PROCESSED_DATA_DIR / "preprocessed_fraud_data.csv"
+            df_final.to_csv(processed_file_path, index=False)
+            self.logger.info(f"Saved preprocessed data to: {processed_file_path}")
+            
+            # Save feature importance information
+            if hasattr(self, 'feature_selector') and self.feature_selector is not None:
+                feature_cols = [col for col in df_final.columns if col != target_col]
+                numeric_cols = df_final[feature_cols].select_dtypes(include=[np.number]).columns
+                
+                if len(numeric_cols) > 0:
+                    X = df_final[numeric_cols]
+                    y = df_final[target_col]
+                    f_scores, p_values = f_classif(X, y)
+                    
+                    feature_importance_data = {
+                        "selected_features": numeric_cols.tolist(),
+                        "f_scores": f_scores.tolist(),
+                        "p_values": p_values.tolist(),
+                        "total_features": len(numeric_cols),
+                        "selection_method": "f_classif",
+                        "target_column": target_col
+                    }
+                    
+                    feature_importance_file = PROCESSED_DATA_DIR / "feature_importance.json"
+                    with open(feature_importance_file, 'w') as f:
+                        json.dump(feature_importance_data, f, indent=2)
+                    self.logger.info(f"Saved feature importance to: {feature_importance_file}")
+            
+            # Save preprocessing metadata
+            metadata = {
+                "original_shape": df.shape,
+                "final_shape": df_final.shape,
+                "features_engineered": len(df_engineered.columns) - len(df_clean.columns),
+                "features_selected": len(df_final.columns),
+                "target_column": target_col,
+                "preprocessing_steps": ["cleaning", "feature_engineering", "encoding", "scaling", "selection"],
+                "timestamp": datetime.now().isoformat(),
+                "scaler_type": type(self.scaler).__name__ if self.scaler else None,
+                "feature_selector_type": type(self.feature_selector).__name__ if self.feature_selector else None
+            }
+            
+            metadata_file = PROCESSED_DATA_DIR / "preprocessing_metadata.json"
+            with open(metadata_file, 'w') as f:
+                json.dump(metadata, f, indent=2)
+            self.logger.info(f"Saved preprocessing metadata to: {metadata_file}")
             
             return df_final
             
