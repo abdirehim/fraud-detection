@@ -27,8 +27,8 @@ def main():
     parser = argparse.ArgumentParser(description="Fraud Detection Pipeline")
     parser.add_argument("--data-path", type=str, help="Path to input data file")
     parser.add_argument("--output-dir", type=str, default="experiments", help="Output directory for results")
-    parser.add_argument("--resampling", type=str, default="smote", 
-                       choices=["smote", "undersample", "smoteenn", "none"],
+    parser.add_argument("--resampling", type=str, default="class_weights", 
+                       choices=["smote", "undersample", "smoteenn", "adasyn", "borderline_smote", "class_weights", "none"],
                        help="Resampling method for imbalanced data")
     parser.add_argument("--target-col", type=str, default="fraud", help="Target column name")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
@@ -123,8 +123,13 @@ def main():
         
         # Step 4: Evaluate Models
         logger.info("Step 4: Evaluating models")
+        
+        # Convert test set target to binary format for evaluation
+        y_test_binary = trainer.convert_target_to_binary(y_test)
+        logger.info(f"Converted test target to binary: {y_test_binary.value_counts().to_dict()}")
+        
         evaluator = ModelEvaluator()
-        evaluation_results = evaluator.evaluate_all_models(models, X_test, y_test)
+        evaluation_results = evaluator.evaluate_all_models(models, X_test, y_test_binary)
         
         # Save evaluation results
         evaluation_dir = experiment_dir / "evaluation"
@@ -143,7 +148,7 @@ def main():
         
         # Generate explanation report
         explanation_report = explainer.generate_explanation_report(
-            best_model, X_test, y_test, 
+            best_model, X_test, y_test_binary, 
             output_path=experiment_dir / "explanation_report.json"
         )
         

@@ -243,7 +243,179 @@ class DataPreprocessor:
             df_engineered['country_encoded'] = pd.Categorical(df_engineered['country']).codes
             self.logger.info("Created country features")
         
+        # Advanced fraud-specific features
+        df_engineered = self._create_advanced_fraud_features(df_engineered)
+        
         return df_engineered
+    
+    def _create_advanced_fraud_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Create advanced fraud-specific features for better fraud detection.
+        
+        Args:
+            df: DataFrame with basic features
+            
+        Returns:
+            DataFrame with advanced fraud features
+        """
+        try:
+            self.logger.info("Creating advanced fraud-specific features")
+            df_advanced = df.copy()
+            
+            # 1. TRANSACTION VELOCITY FEATURES (Simplified approach)
+            if 'user_id' in df_advanced.columns and 'purchase_time' in df_advanced.columns:
+                # Convert to datetime if needed
+                if not pd.api.types.is_datetime64_any_dtype(df_advanced['purchase_time']):
+                    df_advanced['purchase_time'] = pd.to_datetime(df_advanced['purchase_time'])
+                
+                # Sort by user and time
+                df_sorted = df_advanced.sort_values(['user_id', 'purchase_time'])
+                
+                # Calculate time differences between consecutive transactions per user
+                df_sorted['prev_purchase_time'] = df_sorted.groupby('user_id')['purchase_time'].shift(1)
+                df_sorted['time_between_transactions'] = (
+                    df_sorted['purchase_time'] - df_sorted['prev_purchase_time']
+                ).dt.total_seconds()
+                
+                # Simple velocity features (avoid complex rolling windows)
+                user_velocity = df_sorted.groupby('user_id').agg({
+                    'purchase_time': 'count',
+                    'time_between_transactions': ['mean', 'min', 'std']
+                }).reset_index()
+                
+                user_velocity.columns = ['user_id', 'user_total_transactions', 
+                                       'avg_time_between_transactions', 'min_time_between_transactions', 
+                                       'std_time_between_transactions']
+                
+                # Merge back using a safer approach
+                df_advanced = df_advanced.merge(user_velocity, on='user_id', how='left')
+                
+                # Create velocity flags
+                df_advanced['high_transaction_count'] = df_advanced['user_total_transactions'] > 5
+                df_advanced['fast_transactions'] = df_advanced['avg_time_between_transactions'] < 3600  # < 1 hour
+                df_advanced['very_fast_transactions'] = df_advanced['min_time_between_transactions'] < 300  # < 5 min
+                
+                self.logger.info("Created transaction velocity features")
+            
+            # 2. BEHAVIORAL ANOMALY FEATURES
+            if 'user_id' in df_advanced.columns and 'purchase_value' in df_advanced.columns:
+                # User behavior patterns
+                user_stats = df_advanced.groupby('user_id')['purchase_value'].agg([
+                    'mean', 'std', 'min', 'max', 'count'
+                ]).reset_index()
+                user_stats.columns = ['user_id', 'user_avg_amount', 'user_std_amount', 
+                                    'user_min_amount', 'user_max_amount', 'user_transaction_count']
+                
+                # Merge user stats
+                df_advanced = df_advanced.merge(user_stats, on='user_id', how='left')
+                
+                # Anomaly detection features
+                df_advanced['amount_deviation'] = abs(df_advanced['purchase_value'] - df_advanced['user_avg_amount']) / (df_advanced['user_std_amount'] + 1e-8)
+                df_advanced['high_amount_deviation'] = df_advanced['amount_deviation'] > 2.0
+                df_advanced['unusual_purchase_pattern'] = (df_advanced['purchase_value'] > df_advanced['user_max_amount'] * 1.5) | \
+                                                         (df_advanced['purchase_value'] < df_advanced['user_min_amount'] * 0.5)
+                
+                self.logger.info("Created behavioral anomaly features")
+            
+            # 3. GEOGRAPHIC ANOMALY FEATURES
+            if 'user_id' in df_advanced.columns and 'country' in df_advanced.columns:
+                # User's typical location
+                user_countries = df_advanced.groupby('user_id')['country'].agg(['count', 'nunique']).reset_index()
+                user_countries.columns = ['user_id', 'user_country_count', 'user_unique_countries']
+                
+                # Merge country stats
+                df_advanced = df_advanced.merge(user_countries, on='user_id', how='left')
+                
+                # Geographic anomaly flags
+                df_advanced['multiple_countries'] = df_advanced['user_unique_countries'] > 1
+                df_advanced['unusual_country'] = df_advanced['user_unique_countries'] == 1
+                
+                self.logger.info("Created geographic anomaly features")
+            
+            # 4. DEVICE FINGERPRINTING FEATURES
+            if 'user_id' in df_advanced.columns and 'device_id' in df_advanced.columns:
+                # Device sharing patterns
+                device_users = df_advanced.groupby('device_id')['user_id'].agg(['count', 'nunique']).reset_index()
+                device_users.columns = ['device_id', 'device_transaction_count', 'device_unique_users']
+                
+                # Merge device stats
+                df_advanced = df_advanced.merge(device_users, on='device_id', how='left')
+                
+                # Device anomaly flags
+                df_advanced['shared_device'] = df_advanced['device_unique_users'] > 1
+                df_advanced['high_device_usage'] = df_advanced['device_transaction_count'] > 5
+                df_advanced['device_user_ratio'] = df_advanced['device_unique_users'] / (df_advanced['device_transaction_count'] + 1e-8)
+                
+                self.logger.info("Created device fingerprinting features")
+            
+            # 5. TIME-BASED FRAUD PATTERNS
+            if 'purchase_time' in df_advanced.columns:
+                # Time-based fraud indicators
+                df_advanced['is_late_night'] = (df_advanced['purchase_time'].dt.hour >= 22) | (df_advanced['purchase_time'].dt.hour <= 6)
+                df_advanced['is_weekend'] = df_advanced['purchase_time'].dt.dayofweek.isin([5, 6])
+                df_advanced['is_holiday_hours'] = df_advanced['purchase_time'].dt.hour.isin([0, 1, 2, 3, 4, 5, 23])
+                
+                # Time since signup (if available)
+                if 'signup_time' in df_advanced.columns:
+                    if not pd.api.types.is_datetime64_any_dtype(df_advanced['signup_time']):
+                        df_advanced['signup_time'] = pd.to_datetime(df_advanced['signup_time'])
+                    
+                    df_advanced['time_since_signup_seconds'] = (
+                        df_advanced['purchase_time'] - df_advanced['signup_time']
+                    ).dt.total_seconds()
+                    
+                    # Fast fraud indicators
+                    df_advanced['fast_fraud_risk'] = df_advanced['time_since_signup_seconds'] < 3600  # Within 1 hour
+                    df_advanced['very_fast_fraud_risk'] = df_advanced['time_since_signup_seconds'] < 300  # Within 5 minutes
+                    
+                    self.logger.info("Created time-based fraud pattern features")
+            
+            # 6. AMOUNT-BASED FRAUD PATTERNS
+            if 'purchase_value' in df_advanced.columns:
+                # Amount thresholds and patterns
+                df_advanced['is_round_amount'] = df_advanced['purchase_value'] % 100 == 0
+                df_advanced['is_test_amount'] = df_advanced['purchase_value'].isin([0.01, 1.00, 10.00, 100.00])
+                df_advanced['is_high_value'] = df_advanced['purchase_value'] > df_advanced['purchase_value'].quantile(0.95)
+                df_advanced['is_low_value'] = df_advanced['purchase_value'] < df_advanced['purchase_value'].quantile(0.05)
+                
+                # Amount distribution features
+                df_advanced['amount_percentile'] = df_advanced['purchase_value'].rank(pct=True)
+                df_advanced['amount_z_score'] = (df_advanced['purchase_value'] - df_advanced['purchase_value'].mean()) / (df_advanced['purchase_value'].std() + 1e-8)
+                
+                self.logger.info("Created amount-based fraud pattern features")
+            
+            # 7. COMPOSITE FRAUD RISK SCORES
+            # Combine multiple risk factors
+            risk_factors = []
+            
+            if 'high_transaction_count' in df_advanced.columns:
+                risk_factors.append(df_advanced['high_transaction_count'].astype(int))
+            if 'high_amount_deviation' in df_advanced.columns:
+                risk_factors.append(df_advanced['high_amount_deviation'].astype(int))
+            if 'multiple_countries' in df_advanced.columns:
+                risk_factors.append(df_advanced['multiple_countries'].astype(int))
+            if 'shared_device' in df_advanced.columns:
+                risk_factors.append(df_advanced['shared_device'].astype(int))
+            if 'is_late_night' in df_advanced.columns:
+                risk_factors.append(df_advanced['is_late_night'].astype(int))
+            if 'fast_fraud_risk' in df_advanced.columns:
+                risk_factors.append(df_advanced['fast_fraud_risk'].astype(int))
+            if 'is_high_value' in df_advanced.columns:
+                risk_factors.append(df_advanced['is_high_value'].astype(int))
+            
+            if risk_factors:
+                df_advanced['fraud_risk_score'] = sum(risk_factors)
+                df_advanced['high_fraud_risk'] = df_advanced['fraud_risk_score'] >= 3
+                df_advanced['very_high_fraud_risk'] = df_advanced['fraud_risk_score'] >= 5
+                
+                self.logger.info("Created composite fraud risk scores")
+            
+            self.logger.info(f"Advanced fraud features completed. Total features: {len(df_advanced.columns)}")
+            return df_advanced
+            
+        except Exception as e:
+            self.logger.error(f"Error creating advanced fraud features: {str(e)}")
+            return df
     
     def _engineer_creditcard_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Engineer features specific to credit card fraud data."""
@@ -454,9 +626,16 @@ class DataPreprocessor:
             
             X_numeric = X[numeric_cols]
             
+            # Handle NaN values in numeric features
+            if X_numeric.isnull().any().any():
+                self.logger.info("Handling NaN values in numeric features")
+                # Fill NaN with median for each column
+                X_numeric = X_numeric.fillna(X_numeric.median())
+                self.logger.info(f"Filled NaN values in {X_numeric.isnull().sum().sum()} cells")
+            
             if fit:
                 # Fit feature selector
-                k = min(20, len(numeric_cols))  # Select top 20 features or all if less
+                k = min(30, len(numeric_cols))  # Select top 30 features or all if less
                 self.feature_selector = SelectKBest(score_func=f_classif, k=k)
                 X_selected = self.feature_selector.fit_transform(X_numeric, y)
                 
@@ -574,6 +753,12 @@ class DataPreprocessor:
                 if len(numeric_cols) > 0:
                     X = df_final[numeric_cols]
                     y = df_final[target_col]
+                    
+                    # Handle NaN values before calculating feature importance
+                    if X.isnull().any().any():
+                        self.logger.info("Handling NaN values for feature importance calculation")
+                        X = X.fillna(X.median())
+                    
                     f_scores, p_values = f_classif(X, y)
                     
                     feature_importance_data = {

@@ -41,28 +41,36 @@ FEATURE_CONFIG = {
     "encoding_method": "label"     # label, onehot, target
 }
 
-# Model hyperparameters
+# Model hyperparameters optimized for imbalanced fraud detection
 MODEL_HYPERPARAMS = {
     "random_forest": {
-        "n_estimators": 100,
-        "max_depth": 10,
-        "min_samples_split": 2,
-        "min_samples_leaf": 1,
-        "class_weight": "balanced"
+        "n_estimators": 200,
+        "max_depth": 15,
+        "min_samples_split": 5,
+        "min_samples_leaf": 2,
+        "class_weight": "balanced",
+        "criterion": "entropy",
+        "bootstrap": True,
+        "oob_score": True
     },
     "xgboost": {
-        "n_estimators": 100,
-        "max_depth": 6,
-        "learning_rate": 0.1,
+        "n_estimators": 300,
+        "max_depth": 8,
+        "learning_rate": 0.05,
         "subsample": 0.8,
         "colsample_bytree": 0.8,
-        "scale_pos_weight": 1
+        "scale_pos_weight": 10,  # Higher weight for minority class
+        "reg_alpha": 0.1,
+        "reg_lambda": 1.0,
+        "eval_metric": "auc"
     },
     "logistic_regression": {
-        "C": 1.0,
+        "C": 0.1,  # Stronger regularization for imbalanced data
         "class_weight": "balanced",
-        "max_iter": 1000,
-        "random_state": 42
+        "max_iter": 2000,
+        "random_state": 42,
+        "solver": "liblinear",
+        "penalty": "l1"  # L1 regularization for feature selection
     }
 }
 

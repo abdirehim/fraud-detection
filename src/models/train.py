@@ -90,6 +90,15 @@ class ModelTrainer:
                     X, y, test_size=test_size, random_state=random_state
                 )
             
+            # Handle NaN values in training data
+            if X_train.isnull().any().any():
+                self.logger.info("Handling NaN values in training data")
+                X_train = X_train.fillna(X_train.median())
+                self.logger.info(f"Filled NaN values in {X_train.isnull().sum().sum()} cells")
+            
+            # Convert target to binary if needed
+            y_train = self.convert_target_to_binary(y_train)
+            
             self.logger.info(f"Training set size: {len(X_train)}")
             self.logger.info(f"Test set size: {len(X_test)}")
             self.logger.info(f"Training fraud rate: {y_train.mean():.3f}")
@@ -99,6 +108,40 @@ class ModelTrainer:
             
         except Exception as e:
             self.logger.error(f"Error preparing data: {str(e)}")
+            raise
+    
+    def convert_target_to_binary(self, y: pd.Series) -> pd.Series:
+        """
+        Convert target variable to binary format [0, 1].
+        
+        Args:
+            y: Target series that may be encoded
+            
+        Returns:
+            Binary target series with values [0, 1]
+        """
+        try:
+            y_binary = y.copy()
+            
+            # Convert to binary if needed (handle encoded values)
+            if len(y_binary.unique()) > 2:
+                # If we have more than 2 unique values, convert to binary
+                unique_values = sorted(y_binary.unique())
+                y_binary = y_binary.map({unique_values[0]: 0, unique_values[1]: 1})
+                self.logger.info(f"Converted target to binary: {y_binary.value_counts().to_dict()}")
+            else:
+                # Ensure it's integer type and properly mapped to 0/1
+                unique_values = sorted(y_binary.unique())
+                if unique_values != [0, 1]:
+                    y_binary = y_binary.map({unique_values[0]: 0, unique_values[1]: 1})
+                    self.logger.info(f"Mapped target to binary: {y_binary.value_counts().to_dict()}")
+                else:
+                    y_binary = y_binary.astype(int)
+            
+            return y_binary
+            
+        except Exception as e:
+            self.logger.error(f"Error converting target to binary: {str(e)}")
             raise
     
     def handle_imbalanced_data(
@@ -121,26 +164,47 @@ class ModelTrainer:
         try:
             self.logger.info(f"Handling imbalanced data using {method}")
             
+            # Ensure target is binary and integer type for SMOTE
+            y_train_binary = self.convert_target_to_binary(y_train)
+            
+            self.logger.info(f"Target unique values: {y_train_binary.unique()}")
+            self.logger.info(f"Target data type: {y_train_binary.dtype}")
+            
             if method == "none":
-                return X_train, y_train
+                return X_train, y_train_binary
             
             elif method == "smote":
-                smote = SMOTE(random_state=42)
-                X_resampled, y_resampled = smote.fit_resample(X_train, y_train)
+                smote = SMOTE(random_state=42, k_neighbors=3)
+                X_resampled, y_resampled = smote.fit_resample(X_train, y_train_binary)
                 
             elif method == "undersample":
                 undersampler = RandomUnderSampler(random_state=42)
-                X_resampled, y_resampled = undersampler.fit_resample(X_train, y_train)
+                X_resampled, y_resampled = undersampler.fit_resample(X_train, y_train_binary)
                 
             elif method == "smoteenn":
                 smoteenn = SMOTEENN(random_state=42)
-                X_resampled, y_resampled = smoteenn.fit_resample(X_train, y_train)
+                X_resampled, y_resampled = smoteenn.fit_resample(X_train, y_train_binary)
+                
+            elif method == "adasyn":
+                from imblearn.over_sampling import ADASYN
+                adasyn = ADASYN(random_state=42)
+                X_resampled, y_resampled = adasyn.fit_resample(X_train, y_train_binary)
+                
+            elif method == "borderline_smote":
+                from imblearn.over_sampling import BorderlineSMOTE
+                borderline_smote = BorderlineSMOTE(random_state=42, k_neighbors=3)
+                X_resampled, y_resampled = borderline_smote.fit_resample(X_train, y_train_binary)
+                
+            elif method == "class_weights":
+                # Use class weights instead of resampling
+                self.logger.info("Using class weights instead of resampling")
+                return X_train, y_train_binary
                 
             else:
                 raise ValueError(f"Unsupported resampling method: {method}")
             
             # Log resampling results
-            original_counts = y_train.value_counts()
+            original_counts = y_train_binary.value_counts()
             resampled_counts = y_resampled.value_counts()
             
             self.logger.info(f"Original class distribution: {original_counts.to_dict()}")
@@ -153,10 +217,13 @@ class ModelTrainer:
             self.logger.error(f"Error handling imbalanced data: {str(e)}")
             raise
     
-    def create_models(self) -> Dict[str, Any]:
+    def create_models(self, class_weights: Optional[Dict[int, float]] = None) -> Dict[str, Any]:
         """
-        Create model instances with configured hyperparameters.
+        Create model instances with configured hyperparameters and class weights.
         
+        Args:
+            class_weights: Dictionary mapping class labels to weights
+            
         Returns:
             Dictionary of model instances
         """
@@ -165,24 +232,34 @@ class ModelTrainer:
             
             models = {}
             
-            # Random Forest
-            rf_params = MODEL_HYPERPARAMS.get('random_forest', {})
+            # Random Forest with class weights
+            rf_params = MODEL_HYPERPARAMS.get('random_forest', {}).copy()
+            if class_weights:
+                rf_params['class_weight'] = class_weights
+                self.logger.info(f"Random Forest class weights: {class_weights}")
             models['random_forest'] = RandomForestClassifier(
                 random_state=self.config.get('random_state', 42),
                 **rf_params
             )
             
-            # Logistic Regression
-            lr_params = MODEL_HYPERPARAMS.get('logistic_regression', {})
+            # Logistic Regression with class weights
+            lr_params = MODEL_HYPERPARAMS.get('logistic_regression', {}).copy()
+            if class_weights:
+                lr_params['class_weight'] = class_weights
+                self.logger.info(f"Logistic Regression class weights: {class_weights}")
             models['logistic_regression'] = LogisticRegression(
-                random_state=self.config.get('random_state', 42),
                 **lr_params
             )
             
             # Add XGBoost if available
             try:
                 import xgboost as xgb
-                xgb_params = MODEL_HYPERPARAMS.get('xgboost', {})
+                xgb_params = MODEL_HYPERPARAMS.get('xgboost', {}).copy()
+                if class_weights:
+                    # XGBoost uses scale_pos_weight for binary classification
+                    pos_weight = class_weights.get(1, 1.0) / class_weights.get(0, 1.0)
+                    xgb_params['scale_pos_weight'] = pos_weight
+                    self.logger.info(f"XGBoost scale_pos_weight: {pos_weight}")
                 models['xgboost'] = xgb.XGBClassifier(
                     random_state=self.config.get('random_state', 42),
                     **xgb_params
@@ -277,8 +354,17 @@ class ModelTrainer:
                 X_train, y_train, resampling_method
             )
             
-            # Create models
-            models = self.create_models()
+            # Calculate class weights for imbalanced data
+            class_counts = y_resampled.value_counts()
+            total_samples = len(y_resampled)
+            class_weights = {
+                0: total_samples / (2 * class_counts[0]),
+                1: total_samples / (2 * class_counts[1])
+            }
+            self.logger.info(f"Calculated class weights: {class_weights}")
+            
+            # Create models with class weights
+            models = self.create_models(class_weights)
             
             # Train each model
             for model_name, model in models.items():
