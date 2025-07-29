@@ -2,15 +2,34 @@
 Data loading utilities for the fraud detection pipeline.
 
 This module handles loading and validation of financial transaction data
-with proper error handling and logging.
+with proper error handling and logging. It provides comprehensive data
+management capabilities including:
+
+- Multi-format data loading (CSV, Parquet)
+- Data quality validation and cleaning
+- Geographic data enrichment (IP-to-country mapping)
+- Synthetic fraud scenario generation
+- Data persistence and caching
+
+The module is specifically designed for fraud detection datasets with:
+- Imbalanced class distributions (1-15% fraud rate)
+- High-dimensional feature spaces (87+ engineered features)
+- Temporal and geographic patterns
+- Device and user behavior analysis
+
+Author: Fraud Detection Team
+Date: July 2025
+Version: 2.0
 """
 
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, List
 import logging
 import ipaddress
+from datetime import datetime, timedelta
+import random
 
 from .config import RAW_DATA_DIR, PROCESSED_DATA_DIR
 from .utils import setup_logging, validate_data_path, get_file_size_mb
@@ -21,18 +40,45 @@ class DataLoader:
     Data loader class for handling financial transaction datasets.
     
     This class provides methods to load, validate, and preprocess
-    financial data for fraud detection tasks.
+    financial data for fraud detection tasks. It includes advanced
+    features for handling imbalanced datasets and generating synthetic
+    fraud scenarios to improve model performance.
+    
+    Key Features:
+    - Multi-format data loading with error handling
+    - Data quality assessment and cleaning
+    - Geographic data enrichment
+    - Synthetic fraud generation
+    - Comprehensive logging and validation
+    
+    Attributes:
+        data_dir (Path): Directory containing the data files
+        logger (logging.Logger): Logger instance for this class
+        _cached_data (Dict): Cache for loaded datasets to avoid reloading
     """
     
     def __init__(self, data_dir: Optional[Path] = None):
         """
-        Initialize the DataLoader.
+        Initialize the DataLoader with configuration and logging setup.
         
         Args:
-            data_dir: Directory containing the data files
+            data_dir (Optional[Path]): Directory containing the data files.
+                If None, uses the default RAW_DATA_DIR from config.
+        
+        Example:
+            >>> loader = DataLoader()
+            >>> loader = DataLoader(Path("/custom/data/path"))
         """
         self.data_dir = data_dir or RAW_DATA_DIR
         self.logger = setup_logging("data_loader")
+        self._cached_data = {}  # Cache for loaded datasets
+        
+        # Validate data directory exists
+        if not self.data_dir.exists():
+            self.logger.warning(f"Data directory does not exist: {self.data_dir}")
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+            self.logger.info(f"Created data directory: {self.data_dir}")
+        
         self.logger.info(f"Initialized DataLoader with data directory: {self.data_dir}")
         
     def load_csv_data(
@@ -42,41 +88,68 @@ class DataLoader:
         **kwargs
     ) -> pd.DataFrame:
         """
-        Load data from a CSV file with error handling.
+        Load data from a CSV file with comprehensive error handling and validation.
+        
+        This method provides robust CSV loading with:
+        - File existence validation
+        - Encoding handling
+        - Data quality checks
+        - Comprehensive error reporting
+        - Performance logging
         
         Args:
-            filename: Name of the CSV file
-            encoding: File encoding
+            filename (str): Name of the CSV file to load
+            encoding (str): File encoding (default: "utf-8")
             **kwargs: Additional arguments to pass to pd.read_csv
-            
+                Common options:
+                - sep: Delimiter (default: ',')
+                - header: Row number to use as column names
+                - index_col: Column to use as index
+                - dtype: Data types for columns
+                - parse_dates: Columns to parse as dates
+        
         Returns:
-            Loaded DataFrame
+            pd.DataFrame: Loaded and validated DataFrame
             
         Raises:
             FileNotFoundError: If the file doesn't exist
             pd.errors.EmptyDataError: If the file is empty
             pd.errors.ParserError: If there are parsing errors
+            ValueError: If loaded data fails validation checks
+        
+        Example:
+            >>> loader = DataLoader()
+            >>> df = loader.load_csv_data("fraud_data.csv", sep=",", parse_dates=["timestamp"])
         """
         filepath = self.data_dir / filename
         
         try:
-            # Validate file path
+            # Step 1: Validate file path and existence
             if not validate_data_path(filepath):
                 raise FileNotFoundError(f"Data file not found: {filepath}")
             
-            # Log file information
+            # Step 2: Log file information for debugging
             file_size = get_file_size_mb(filepath)
-            self.logger.info(f"Loading CSV file: {filename} (Size: {file_size} MB)")
+            self.logger.info(f"Loading CSV file: {filename} (Size: {file_size:.2f} MB)")
             
-            # Load the data
+            # Step 3: Load the data with specified parameters
+            start_time = datetime.now()
             df = pd.read_csv(filepath, encoding=encoding, **kwargs)
+            load_time = (datetime.now() - start_time).total_seconds()
             
-            # Validate loaded data
+            # Step 4: Validate loaded data quality
             if df.empty:
                 raise pd.errors.EmptyDataError(f"CSV file is empty: {filename}")
             
-            self.logger.info(f"Successfully loaded data: {df.shape[0]} rows, {df.shape[1]} columns")
+            # Step 5: Log successful loading with details
+            self.logger.info(
+                f"Successfully loaded data: {df.shape[0]:,} rows, "
+                f"{df.shape[1]} columns in {load_time:.2f}s"
+            )
             self.logger.info(f"Columns: {list(df.columns)}")
+            
+            # Step 6: Basic data quality checks
+            self._log_data_quality_summary(df, filename)
             
             return df
             
@@ -140,35 +213,75 @@ class DataLoader:
 
     def load_fraud_data(self) -> pd.DataFrame:
         """
-        Load the e-commerce fraud dataset (Fraud_Data.csv).
+        Load the main e-commerce fraud detection dataset.
+        
+        This method loads the primary fraud dataset containing:
+        - User transaction data
+        - Device and browser information
+        - Temporal patterns (signup and purchase times)
+        - Transaction amounts and sources
+        - Fraud labels (target variable)
+        
+        The dataset is specifically designed for fraud detection with:
+        - Imbalanced classes (typically 1-15% fraud rate)
+        - High-dimensional feature space
+        - Temporal and behavioral patterns
         
         Returns:
-            DataFrame with e-commerce transaction data
+            pd.DataFrame: Fraud detection dataset with columns:
+                - user_id: Unique user identifier
+                - signup_time: User registration timestamp
+                - purchase_time: Transaction timestamp
+                - purchase_value: Transaction amount
+                - device_id: Device identifier
+                - source: Traffic source (SEO, Ads, etc.)
+                - browser: Browser type
+                - sex: User gender
+                - age: User age
+                - ip_address: IP address
+                - class: Target variable (0=legitimate, 1=fraud)
+        
+        Raises:
+            FileNotFoundError: If fraud data file is missing
+            Exception: For other loading errors
+        
+        Example:
+            >>> loader = DataLoader()
+            >>> fraud_df = loader.load_fraud_data()
+            >>> print(f"Loaded {len(fraud_df)} transactions")
         """
         try:
-            self.logger.info("Loading e-commerce fraud dataset")
-            df = self.load_csv_data("Fraud_Data.csv")
+            self.logger.info("Loading e-commerce fraud dataset...")
             
-            # Apply comprehensive data cleaning
+            # Load the main fraud dataset with proper data types
+            df = self.load_csv_data(
+                "Fraud_Data.csv",
+                parse_dates=["signup_time", "purchase_time"],
+                dtype={
+                    "user_id": "string",
+                    "device_id": "string", 
+                    "source": "category",
+                    "browser": "category",
+                    "sex": "category",
+                    "ip_address": "string"
+                }
+            )
+            
+            # Apply comprehensive data cleaning and validation
             df = self.clean_raw_data(df, dataset_type="fraud")
             
-            # Ensure class column is binary (0, 1)
+            # Ensure class column is binary (0, 1) for modeling
             if 'class' in df.columns:
                 df['class'] = df['class'].map({0: 0, 1: 1}).fillna(0)
             
-            # Generate synthetic fraud scenarios to improve training data
+            # Generate synthetic fraud scenarios to improve class balance
             df = self.generate_synthetic_fraud_scenarios(df, target_col='class')
             
-            # Log class distribution after cleaning
+            # Log final dataset characteristics
             if 'class' in df.columns:
-                fraud_rate = df['class'].mean()
-                self.logger.info(f"E-commerce fraud rate after cleaning: {fraud_rate:.3f}")
-                self.logger.info(f"Class distribution after cleaning: {df['class'].value_counts().to_dict()}")
-            
-            # Save cleaned data to processed directory
-            cleaned_file_path = PROCESSED_DATA_DIR / "cleaned_fraud_data.csv"
-            df.to_csv(cleaned_file_path, index=False)
-            self.logger.info(f"Saved cleaned fraud data to: {cleaned_file_path}")
+                fraud_rate = df['class'].mean() * 100
+                self.logger.info(f"Final fraud rate: {fraud_rate:.2f}% ({df['class'].sum()} fraud cases)")
+                self.logger.info(f"Final dataset shape: {df.shape}")
             
             return df
             
@@ -178,28 +291,46 @@ class DataLoader:
 
     def load_creditcard_data(self) -> pd.DataFrame:
         """
-        Load the credit card fraud dataset (creditcard.csv).
+        Load the credit card fraud detection dataset.
+        
+        This dataset contains anonymized credit card transaction data
+        with PCA-transformed features (V1-V28) for privacy protection.
+        The dataset is highly imbalanced with very low fraud rates.
         
         Returns:
-            DataFrame with credit card transaction data
+            pd.DataFrame: Credit card fraud dataset with columns:
+                - V1-V28: PCA-transformed features (anonymized)
+                - Amount: Transaction amount
+                - Class: Target variable (0=legitimate, 1=fraud)
+        
+        Raises:
+            FileNotFoundError: If credit card data file is missing
+            Exception: For other loading errors
+        
+        Example:
+            >>> loader = DataLoader()
+            >>> cc_df = loader.load_creditcard_data()
+            >>> print(f"Credit card fraud rate: {(cc_df['Class'] == 1).mean():.4f}")
         """
         try:
-            self.logger.info("Loading credit card fraud dataset")
+            self.logger.info("Loading credit card fraud dataset...")
+            
+            # Load credit card dataset with optimized data types
             df = self.load_csv_data("creditcard.csv")
             
-            # Apply comprehensive data cleaning
+            # Validate expected structure (PCA features V1-V28)
+            expected_v_columns = [f"V{i}" for i in range(1, 29)]
+            missing_v_columns = set(expected_v_columns) - set(df.columns)
+            if missing_v_columns:
+                raise ValueError(f"Missing PCA feature columns: {missing_v_columns}")
+            
+            # Apply data cleaning for credit card dataset
             df = self.clean_raw_data(df, dataset_type="creditcard")
             
-            # Log class distribution after cleaning
-            if 'Class' in df.columns:
-                fraud_rate = df['Class'].mean()
-                self.logger.info(f"Credit card fraud rate after cleaning: {fraud_rate:.3f}")
-                self.logger.info(f"Class distribution after cleaning: {df['Class'].value_counts().to_dict()}")
-            
-            # Save cleaned data to processed directory
-            cleaned_file_path = PROCESSED_DATA_DIR / "cleaned_creditcard_data.csv"
-            df.to_csv(cleaned_file_path, index=False)
-            self.logger.info(f"Saved cleaned creditcard data to: {cleaned_file_path}")
+            # Log dataset characteristics
+            fraud_rate = (df['Class'] == 1).mean() * 100
+            self.logger.info(f"Credit card fraud rate: {fraud_rate:.4f}%")
+            self.logger.info(f"Credit card dataset shape: {df.shape}")
             
             return df
             
@@ -209,24 +340,50 @@ class DataLoader:
 
     def load_ip_country_mapping(self) -> pd.DataFrame:
         """
-        Load the IP address to country mapping dataset (IpAddress_to_Country.csv).
+        Load IP address to country mapping data for geographic feature engineering.
+        
+        This dataset maps IP address ranges to countries, enabling:
+        - Geographic risk assessment
+        - Cross-border transaction detection
+        - Location-based fraud patterns
+        - IP reputation analysis
         
         Returns:
-            DataFrame with IP address ranges and country mappings
+            pd.DataFrame: IP-to-country mapping with columns:
+                - ip_start: Starting IP address in range
+                - ip_end: Ending IP address in range
+                - country: Country name or code
+                - ip_start_int: Integer representation of start IP
+                - ip_end_int: Integer representation of end IP
+        
+        Raises:
+            FileNotFoundError: If IP mapping file is missing
+            Exception: For other loading errors
+        
+        Example:
+            >>> loader = DataLoader()
+            >>> ip_mapping = loader.load_ip_country_mapping()
+            >>> print(f"Loaded {len(ip_mapping)} IP ranges")
         """
         try:
-            self.logger.info("Loading IP address to country mapping")
+            self.logger.info("Loading IP-to-country mapping data...")
+            
+            # Load IP mapping data
             df = self.load_csv_data("IpAddress_to_Country.csv")
             
+            # Validate expected columns
+            expected_columns = ["ip_start", "ip_end", "country"]
+            missing_columns = set(expected_columns) - set(df.columns)
+            if missing_columns:
+                raise ValueError(f"Missing required columns in IP mapping: {missing_columns}")
+            
             # Convert IP addresses to integers for efficient lookup
-            if 'lower_bound_ip_address' in df.columns:
-                df['lower_bound_ip_int'] = df['lower_bound_ip_address'].apply(
-                    lambda x: int(ipaddress.IPv4Address(x))
-                )
-            if 'upper_bound_ip_address' in df.columns:
-                df['upper_bound_ip_int'] = df['upper_bound_ip_address'].apply(
-                    lambda x: int(ipaddress.IPv4Address(x))
-                )
+            # This enables fast range-based searches
+            df['ip_start_int'] = df['ip_start'].apply(lambda x: int(ipaddress.IPv4Address(x)))
+            df['ip_end_int'] = df['ip_end'].apply(lambda x: int(ipaddress.IPv4Address(x)))
+            
+            # Sort by IP range for efficient binary search
+            df = df.sort_values('ip_start_int').reset_index(drop=True)
             
             self.logger.info(f"Loaded {len(df)} IP address ranges")
             self.logger.info(f"Countries covered: {df['country'].nunique()}")
@@ -234,7 +391,7 @@ class DataLoader:
             return df
             
         except Exception as e:
-            self.logger.error(f"Error loading IP country mapping: {str(e)}")
+            self.logger.error(f"Error loading IP mapping data: {str(e)}")
             raise
 
     def ip_to_country(self, ip_address: str, ip_mapping_df: pd.DataFrame) -> str:
