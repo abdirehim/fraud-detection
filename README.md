@@ -93,55 +93,9 @@ This will:
 - Generate SHAP explainability reports
 - Save all results to the experiments directory
 
-### 3. Run the Demo
 
-```bash
-# Run the interactive demonstration
-python demo.py
-```
 
-This showcases:
-- Pipeline overview and key features
-- Actual performance metrics
-- Advanced feature engineering capabilities
-- Synthetic fraud generation results
-- Business impact and cost savings
-- Key business insights
-- Top 10 most important features
-- Production readiness features
 
-### 4. View Project Summary
-
-```bash
-# View the complete project summary
-cat PROJECT_SUMMARY.md
-```
-
-This provides:
-- Project completion status
-- Key achievements and deliverables
-- Technical implementation details
-- Business value and ROI analysis
-- Production readiness assessment
-- Future enhancement roadmap
-
-### 5. Review Final Checklist
-
-```bash
-# Review the complete project checklist
-cat FINAL_CHECKLIST.md
-```
-
-This ensures:
-- All components are implemented and tested
-- Performance metrics are validated
-- Documentation is complete
-- Production readiness is confirmed
-- Future enhancements are planned
-
-## 🔧 Advanced Features
-
-### 🎯 Advanced Fraud-Specific Feature Engineering
 
 #### **Time-Based Features**
 - `time_since_signup_hours`: Critical temporal fraud indicator
@@ -322,12 +276,7 @@ All configuration is centralized in `src/config.py`:
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
-## 🆘 Support
-
-For questions and support:
-- Check the comprehensive report: `comprehensive_fraud_detection_report.md`
-- Review the generated visualizations in the `reports/` directory
-- Open an issue on GitHub
+#
 
 ## 🔮 Future Enhancements
 
