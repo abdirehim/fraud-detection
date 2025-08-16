@@ -21,43 +21,44 @@ Date: July 2025
 Version: 2.0
 """
 
+import hashlib
+import json
 import logging
 import os
-import sys
-from pathlib import Path
-from typing import Optional, Dict, Any, Union
-import json
 import pickle
+import sys
 from datetime import datetime
-import hashlib
+from pathlib import Path
+from typing import Any, Dict, Optional, Union
 
-from .config import LOG_DIR, LOG_LEVEL, LOG_FORMAT
+from .config import LOG_DIR, LOG_FORMAT, LOG_LEVEL
 
 
 def setup_logging(
     name: str = "fraud_detection",
-    log_level: str = LOG_LEVEL,
+    level: str = LOG_LEVEL,
+    log_file: Optional[str] = None,
     log_dir: Path = LOG_DIR,
-    log_format: str = LOG_FORMAT
+    log_format: str = LOG_FORMAT,
 ) -> logging.Logger:
     """
     Set up comprehensive logging configuration for both file and console output.
-    
+
     This function creates a robust logging system that:
     - Outputs to both console and file for complete audit trail
     - Uses timestamped log files to prevent overwrites
     - Provides configurable log levels and formats
     - Ensures thread-safe logging across the pipeline
-    
+
     Args:
         name (str): Logger name (default: "fraud_detection")
         log_level (str): Logging level - DEBUG, INFO, WARNING, ERROR, CRITICAL
         log_dir (Path): Directory to store log files (default: from config)
         log_format (str): Format string for log messages (default: from config)
-        
+
     Returns:
         logging.Logger: Configured logger instance ready for use
-        
+
     Example:
         >>> logger = setup_logging("data_loader", "INFO")
         >>> logger.info("Data loading started")
@@ -65,55 +66,62 @@ def setup_logging(
     """
     # Create log directory if it doesn't exist
     log_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Create logger with specified name
     logger = logging.getLogger(name)
-    logger.setLevel(getattr(logging, log_level.upper()))
-    
+    logger.setLevel(getattr(logging, level.upper(), logging.INFO))
+
     # Clear existing handlers to avoid duplicates (important for reusing loggers)
     logger.handlers.clear()
-    
+
     # Create formatter with specified format
     formatter = logging.Formatter(log_format)
-    
+
     # Console handler for immediate feedback
     console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(getattr(logging, log_level.upper()))
+    console_handler.setLevel(getattr(logging, level.upper(), logging.INFO))
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
-    
+
     # File handler for persistent audit trail
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = log_dir / f"{name}_{timestamp}.log"
-    file_handler = logging.FileHandler(log_file)
-    file_handler.setLevel(getattr(logging, log_level.upper()))
+    if log_file:
+        # Use provided log file path
+        file_path = Path(log_file)
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        # Create timestamped log file
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        file_path = log_dir / f"{name}_{timestamp}.log"
+
+    file_handler = logging.FileHandler(file_path)
+    file_handler.setLevel(getattr(logging, level.upper(), logging.INFO))
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
-    
+
     # Log the setup completion
-    logger.info(f"Logging setup complete - Console and file: {log_file}")
-    
+    logger.info(f"Logging setup complete - Console and file: {file_path}")
+
     return logger
 
 
-def save_model(model: Any, filepath: Path, model_name: str = "model") -> None:
+def save_model(model: Any, filepath: Path, model_name: str = "model") -> bool:
     """
     Save a trained model to disk with comprehensive error handling.
-    
+
     This function provides robust model persistence with:
     - Automatic directory creation
     - Binary serialization using pickle
     - Detailed logging of save operations
     - Error handling and validation
-    
+
     Args:
         model (Any): Trained model object (sklearn, xgboost, etc.)
         filepath (Path): Path where to save the model file
         model_name (str): Name of the model for logging purposes
-        
+
     Raises:
         Exception: If model saving fails with detailed error message
-        
+
     Example:
         >>> from sklearn.ensemble import RandomForestClassifier
         >>> model = RandomForestClassifier()
@@ -122,43 +130,46 @@ def save_model(model: Any, filepath: Path, model_name: str = "model") -> None:
     try:
         # Create directory structure if it doesn't exist
         filepath.parent.mkdir(parents=True, exist_ok=True)
-        
+
         # Save model using pickle for maximum compatibility
-        with open(filepath, 'wb') as f:
+        with open(filepath, "wb") as f:
             pickle.dump(model, f, protocol=pickle.HIGHEST_PROTOCOL)
-            
+
         # Log successful save with file size
         file_size = get_file_size_mb(filepath)
         logger = logging.getLogger(__name__)
-        logger.info(f"Model '{model_name}' saved successfully to {filepath} ({file_size:.2f} MB)")
-        
+        logger.info(
+            f"Model '{model_name}' saved successfully to {filepath} ({file_size:.2f} MB)"
+        )
+        return True
+
     except Exception as e:
         logger = logging.getLogger(__name__)
         logger.error(f"Failed to save model '{model_name}' to {filepath}: {str(e)}")
-        raise
+        return False
 
 
-def load_model(filepath: Path, model_name: str = "model") -> Any:
+def load_model(filepath: Path, model_name: str = "model") -> Optional[Any]:
     """
     Load a trained model from disk with validation and error handling.
-    
+
     This function provides safe model loading with:
     - File existence validation
     - Pickle deserialization with error handling
     - Detailed logging of load operations
     - Model integrity verification
-    
+
     Args:
         filepath (Path): Path to the saved model file
         model_name (str): Name of the model for logging purposes
-        
+
     Returns:
         Any: Loaded model object
-        
+
     Raises:
         FileNotFoundError: If model file doesn't exist
         Exception: If model loading fails
-        
+
     Example:
         >>> model = load_model(Path("models/rf_model.pkl"), "RandomForest")
         >>> predictions = model.predict(X_test)
@@ -167,45 +178,47 @@ def load_model(filepath: Path, model_name: str = "model") -> Any:
         # Validate file exists
         if not filepath.exists():
             raise FileNotFoundError(f"Model file not found: {filepath}")
-        
+
         # Load model using pickle
-        with open(filepath, 'rb') as f:
+        with open(filepath, "rb") as f:
             model = pickle.load(f)
-            
+
         # Log successful load
         file_size = get_file_size_mb(filepath)
         logger = logging.getLogger(__name__)
-        logger.info(f"Model '{model_name}' loaded successfully from {filepath} ({file_size:.2f} MB)")
-        
+        logger.info(
+            f"Model '{model_name}' loaded successfully from {filepath} ({file_size:.2f} MB)"
+        )
+
         return model
-        
+
     except FileNotFoundError as e:
         logger = logging.getLogger(__name__)
         logger.error(f"Model file not found: {str(e)}")
-        raise
+        return None
     except Exception as e:
         logger = logging.getLogger(__name__)
         logger.error(f"Failed to load model '{model_name}' from {filepath}: {str(e)}")
-        raise
+        return None
 
 
-def save_metrics(metrics: Dict[str, Union[float, int, str]], filepath: Path) -> None:
+def save_metrics(metrics: Dict[str, Union[float, int, str]], filepath: Path) -> bool:
     """
     Save model evaluation metrics to JSON file for persistence and analysis.
-    
+
     This function saves metrics in a human-readable JSON format that:
     - Preserves all metric types (float, int, string)
     - Enables easy analysis and comparison
     - Provides version control friendly format
     - Includes timestamp for tracking
-    
+
     Args:
         metrics (Dict[str, Union[float, int, str]]): Dictionary of metrics to save
         filepath (Path): Path where to save the metrics file
-        
+
     Raises:
         Exception: If metrics saving fails
-        
+
     Example:
         >>> metrics = {"accuracy": 0.95, "f1_score": 0.87, "model": "RandomForest"}
         >>> save_metrics(metrics, Path("experiments/metrics.json"))
@@ -213,46 +226,47 @@ def save_metrics(metrics: Dict[str, Union[float, int, str]], filepath: Path) -> 
     try:
         # Create directory if it doesn't exist
         filepath.parent.mkdir(parents=True, exist_ok=True)
-        
+
         # Add timestamp to metrics
         metrics_with_timestamp = {
             "timestamp": datetime.now().isoformat(),
-            "metrics": metrics
+            "metrics": metrics,
         }
-        
+
         # Save metrics as JSON with pretty formatting
-        with open(filepath, 'w') as f:
+        with open(filepath, "w") as f:
             json.dump(metrics_with_timestamp, f, indent=2, default=str)
-            
+
         logger = logging.getLogger(__name__)
         logger.info(f"Metrics saved successfully to {filepath}")
-        
+        return True
+
     except Exception as e:
         logger = logging.getLogger(__name__)
         logger.error(f"Failed to save metrics to {filepath}: {str(e)}")
-        raise
+        return False
 
 
 def load_metrics(filepath: Path) -> Dict[str, Union[float, int, str]]:
     """
     Load model evaluation metrics from JSON file.
-    
+
     This function loads previously saved metrics with:
     - JSON parsing with error handling
     - Type preservation for numeric values
     - Timestamp extraction for tracking
     - Validation of metric structure
-    
+
     Args:
         filepath (Path): Path to the metrics file
-        
+
     Returns:
         Dict[str, Union[float, int, str]]: Loaded metrics dictionary
-        
+
     Raises:
         FileNotFoundError: If metrics file doesn't exist
         Exception: If metrics loading fails
-        
+
     Example:
         >>> metrics = load_metrics(Path("experiments/metrics.json"))
         >>> print(f"Accuracy: {metrics['accuracy']:.3f}")
@@ -261,11 +275,11 @@ def load_metrics(filepath: Path) -> Dict[str, Union[float, int, str]]:
         # Validate file exists
         if not filepath.exists():
             raise FileNotFoundError(f"Metrics file not found: {filepath}")
-        
+
         # Load metrics from JSON
-        with open(filepath, 'r') as f:
+        with open(filepath, "r") as f:
             data = json.load(f)
-            
+
         # Extract metrics (handle both old and new format)
         if "metrics" in data:
             metrics = data["metrics"]
@@ -273,12 +287,14 @@ def load_metrics(filepath: Path) -> Dict[str, Union[float, int, str]]:
         else:
             metrics = data
             timestamp = "unknown"
-            
+
         logger = logging.getLogger(__name__)
-        logger.info(f"Metrics loaded successfully from {filepath} (timestamp: {timestamp})")
-        
+        logger.info(
+            f"Metrics loaded successfully from {filepath} (timestamp: {timestamp})"
+        )
+
         return metrics
-        
+
     except FileNotFoundError as e:
         logger = logging.getLogger(__name__)
         logger.error(f"Metrics file not found: {str(e)}")
@@ -289,25 +305,74 @@ def load_metrics(filepath: Path) -> Dict[str, Union[float, int, str]]:
         raise
 
 
-def create_experiment_dir(experiment_name: str, base_dir: Path) -> Path:
+def ensure_directory_exists(directory_path: Path) -> bool:
+    """
+    Ensure that a directory exists, creating it if necessary.
+
+    This function provides safe directory creation with:
+    - Parent directory creation
+    - Permission error handling
+    - Validation that path is actually a directory
+    - Detailed error logging
+
+    Args:
+        directory_path (Path): Path to the directory to create/validate
+
+    Returns:
+        bool: True if directory exists or was created successfully, False otherwise
+
+    Example:
+        >>> success = ensure_directory_exists(Path("data/processed"))
+        >>> if success:
+        ...     print("Directory is ready for use")
+    """
+    try:
+        # Check if path already exists
+        if directory_path.exists():
+            # Verify it's actually a directory, not a file
+            if directory_path.is_dir():
+                return True
+            else:
+                logger = logging.getLogger(__name__)
+                logger.error(f"Path exists but is not a directory: {directory_path}")
+                return False
+
+        # Create directory with parents
+        directory_path.mkdir(parents=True, exist_ok=True)
+
+        logger = logging.getLogger(__name__)
+        logger.info(f"Created directory: {directory_path}")
+        return True
+
+    except PermissionError as e:
+        logger = logging.getLogger(__name__)
+        logger.error(f"Permission denied creating directory {directory_path}: {str(e)}")
+        return False
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.error(f"Failed to create directory {directory_path}: {str(e)}")
+        return False
+
+
+def create_experiment_dir(base_dir: Path, experiment_name: str) -> Path:
     """
     Create a unique experiment directory with timestamp for organization.
-    
+
     This function creates experiment directories that:
     - Include timestamp to prevent conflicts
     - Organize experiments by name and date
     - Create necessary subdirectories for artifacts
     - Provide consistent structure across experiments
-    
+
     Args:
-        experiment_name (str): Name of the experiment
         base_dir (Path): Base directory for experiments
-        
+        experiment_name (str): Name of the experiment
+
     Returns:
         Path: Path to the created experiment directory
-        
+
     Example:
-        >>> exp_dir = create_experiment_dir("fraud_detection", Path("experiments"))
+        >>> exp_dir = create_experiment_dir(Path("experiments"), "fraud_detection")
         >>> print(f"Experiment directory: {exp_dir}")
         # Output: experiments/fraud_detection_20250729_143022/
     """
@@ -315,21 +380,21 @@ def create_experiment_dir(experiment_name: str, base_dir: Path) -> Path:
         # Create timestamp for unique directory name
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         experiment_dir = base_dir / f"{experiment_name}_{timestamp}"
-        
+
         # Create experiment directory and subdirectories
         experiment_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Create standard subdirectories for experiment artifacts
         (experiment_dir / "models").mkdir(exist_ok=True)
         (experiment_dir / "evaluation").mkdir(exist_ok=True)
         (experiment_dir / "visualizations").mkdir(exist_ok=True)
         (experiment_dir / "logs").mkdir(exist_ok=True)
-        
+
         logger = logging.getLogger(__name__)
         logger.info(f"Created experiment directory: {experiment_dir}")
-        
+
         return experiment_dir
-        
+
     except Exception as e:
         logger = logging.getLogger(__name__)
         logger.error(f"Failed to create experiment directory: {str(e)}")
@@ -339,19 +404,19 @@ def create_experiment_dir(experiment_name: str, base_dir: Path) -> Path:
 def validate_data_path(filepath: Path) -> bool:
     """
     Validate that a data file path exists and is accessible.
-    
+
     This function performs comprehensive path validation including:
     - File existence check
     - File size validation (non-zero)
     - Read permission verification
     - Path format validation
-    
+
     Args:
         filepath (Path): Path to the data file to validate
-        
+
     Returns:
         bool: True if file is valid and accessible, False otherwise
-        
+
     Example:
         >>> is_valid = validate_data_path(Path("data/raw/fraud_data.csv"))
         >>> if is_valid:
@@ -361,21 +426,21 @@ def validate_data_path(filepath: Path) -> bool:
         # Check if file exists
         if not filepath.exists():
             return False
-        
+
         # Check if it's a file (not directory)
         if not filepath.is_file():
             return False
-        
+
         # Check if file has content (non-zero size)
         if filepath.stat().st_size == 0:
             return False
-        
+
         # Check if file is readable
         if not os.access(filepath, os.R_OK):
             return False
-        
+
         return True
-        
+
     except Exception:
         # Any exception during validation means file is not valid
         return False
@@ -384,19 +449,19 @@ def validate_data_path(filepath: Path) -> bool:
 def get_file_size_mb(filepath: Path) -> float:
     """
     Get file size in megabytes for logging and monitoring.
-    
+
     This function provides file size information useful for:
     - Performance monitoring
     - Resource planning
     - Logging and debugging
     - Data validation
-    
+
     Args:
         filepath (Path): Path to the file
-        
+
     Returns:
         float: File size in megabytes
-        
+
     Example:
         >>> size_mb = get_file_size_mb(Path("data/raw/fraud_data.csv"))
         >>> print(f"File size: {size_mb:.2f} MB")
@@ -404,12 +469,12 @@ def get_file_size_mb(filepath: Path) -> float:
     try:
         # Get file size in bytes
         size_bytes = filepath.stat().st_size
-        
+
         # Convert to megabytes
         size_mb = size_bytes / (1024 * 1024)
-        
+
         return size_mb
-        
+
     except Exception as e:
         logger = logging.getLogger(__name__)
         logger.warning(f"Could not get file size for {filepath}: {str(e)}")
@@ -419,37 +484,37 @@ def get_file_size_mb(filepath: Path) -> float:
 def calculate_data_hash(data: Any) -> str:
     """
     Calculate a hash of data for integrity checking and caching.
-    
+
     This function creates a deterministic hash that can be used for:
     - Data integrity verification
     - Cache invalidation
     - Change detection
     - Reproducibility checks
-    
+
     Args:
         data (Any): Data to hash (DataFrame, array, etc.)
-        
+
     Returns:
         str: Hexadecimal hash string
-        
+
     Example:
         >>> hash_value = calculate_data_hash(df)
         >>> print(f"Data hash: {hash_value}")
     """
     try:
         # Convert data to string representation for hashing
-        if hasattr(data, 'to_string'):
+        if hasattr(data, "to_string"):
             # For pandas DataFrames
             data_str = data.to_string()
         else:
             # For other data types
             data_str = str(data)
-        
+
         # Calculate SHA-256 hash
         hash_object = hashlib.sha256(data_str.encode())
         return hash_object.hexdigest()
-        
+
     except Exception as e:
         logger = logging.getLogger(__name__)
         logger.warning(f"Could not calculate data hash: {str(e)}")
-        return "unknown" 
+        return "unknown"

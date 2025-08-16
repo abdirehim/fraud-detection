@@ -454,13 +454,13 @@ fraud-detection/
 ```python
 class DataLoader:
     """Load and validate fraud detection datasets."""
-    
+
     def load_all_datasets(self) -> Dict[str, pd.DataFrame]:
         """Load all available datasets."""
-        
+
     def load_csv_data(self, file_path: str) -> pd.DataFrame:
         """Load data from CSV file."""
-        
+
     def load_parquet_data(self, file_path: str) -> pd.DataFrame:
         """Load data from Parquet file."""
 ```
@@ -469,10 +469,10 @@ class DataLoader:
 ```python
 class DataPreprocessor:
     """Advanced feature engineering and preprocessing."""
-    
+
     def fit_transform(self, data: pd.DataFrame, target_col: str) -> pd.DataFrame:
         """Fit preprocessor and transform data."""
-        
+
     def transform(self, data: pd.DataFrame) -> pd.DataFrame:
         """Transform new data using fitted preprocessor."""
 ```
@@ -481,11 +481,11 @@ class DataPreprocessor:
 ```python
 class ModelTrainer:
     """Train and validate machine learning models."""
-    
-    def train_all_models(self, X_train: pd.DataFrame, y_train: pd.Series, 
+
+    def train_all_models(self, X_train: pd.DataFrame, y_train: pd.Series,
                         resampling: str = 'class_weights') -> Dict[str, Any]:
         """Train all available models."""
-        
+
     def get_best_model(self) -> Tuple[str, Any]:
         """Get the best performing model."""
 ```
@@ -494,8 +494,8 @@ class ModelTrainer:
 ```python
 class ModelEvaluator:
     """Evaluate model performance with comprehensive metrics."""
-    
-    def evaluate_all_models(self, models: Dict[str, Any], 
+
+    def evaluate_all_models(self, models: Dict[str, Any],
                            X_test: pd.DataFrame, y_test: pd.Series) -> Dict[str, Any]:
         """Evaluate all models with multiple metrics."""
 ```
@@ -504,12 +504,12 @@ class ModelEvaluator:
 ```python
 class ModelExplainer:
     """SHAP-based model interpretability."""
-    
-    def fit_shap_explainer(self, model: Any, X_train: pd.DataFrame, 
+
+    def fit_shap_explainer(self, model: Any, X_train: pd.DataFrame,
                           model_type: str = "tree") -> None:
         """Fit SHAP explainer for the model."""
-        
-    def generate_explanation_report(self, model: Any, X_test: pd.DataFrame, 
+
+    def generate_explanation_report(self, model: Any, X_test: pd.DataFrame,
                                   y_test: pd.Series, output_path: str = None) -> Dict[str, Any]:
         """Generate comprehensive explanation report."""
 ```
@@ -685,35 +685,6 @@ python -m black src/
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-### Citation
-If you use this project in your research, please cite:
-```bibtex
-@software{fraud_detection_2025,
-  title={Advanced Fraud Detection System},
-  author={Your Name},
-  year={2025},
-  url={https://github.com/yourusername/fraud-detection}
-}
-```
-
----
-
-## 📞 Support
-
-### Getting Help
-- **Issues**: [GitHub Issues](https://github.com/yourusername/fraud-detection/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/fraud-detection/discussions)
-- **Email**: your.email@example.com
-
-### Documentation
-- **API Reference**: [docs/api.md](docs/api.md)
-- **User Guide**: [docs/user_guide.md](docs/user_guide.md)
-- **Tutorial**: [docs/tutorial.md](docs/tutorial.md)
-
-### Community
-- **Slack**: [Join our Slack](https://slack.example.com)
-- **Discord**: [Join our Discord](https://discord.gg/example)
-- **Twitter**: [@yourusername](https://twitter.com/yourusername)
 
 ---
 
@@ -736,6 +707,6 @@ If you use this project in your research, please cite:
 
 ---
 
-**Made with ❤️ by [Your Name]**
+**Made with ❤️ bydrehim**
 
 *This project demonstrates the power of combining advanced machine learning techniques with domain knowledge to solve real-world business problems.*
